@@ -30,6 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
+	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	"github.com/onsi/ginkgo"
@@ -117,7 +119,7 @@ func runDensityBatchTest(f *framework.Framework, testArg densityTest) (time.Dura
 	}, 10*time.Minute, 10*time.Second).Should(gomega.BeTrue())
 
 	if len(watchTimes) < testArg.podsNr {
-		framework.Failf("Timeout reached waiting for all Pods to be observed by the watch.")
+		e2elog.Failf("Timeout reached waiting for all Pods to be observed by the watch.")
 	}
 
 	// Analyze results
@@ -130,7 +132,7 @@ func runDensityBatchTest(f *framework.Framework, testArg densityTest) (time.Dura
 
 	for name, create := range createTimes {
 		watch, ok := watchTimes[name]
-		gomega.Expect(ok).To(gomega.Equal(true))
+		framework.ExpectEqual(ok, true)
 
 		e2eLags = append(e2eLags,
 			framework.PodLatencyData{Name: name, Latency: watch.Time.Sub(create.Time)})
@@ -200,12 +202,12 @@ func newInformerWatchPod(f *framework.Framework, mutex *sync.Mutex, watchTimes m
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				p, ok := obj.(*v1.Pod)
-				gomega.Expect(ok).To(gomega.Equal(true))
+				framework.ExpectEqual(ok, true)
 				go checkPodRunning(p)
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				p, ok := newObj.(*v1.Pod)
-				gomega.Expect(ok).To(gomega.Equal(true))
+				framework.ExpectEqual(ok, true)
 				go checkPodRunning(p)
 			},
 		},
@@ -269,7 +271,7 @@ func deletePodsSync(f *framework.Framework, pods []*v1.Pod) {
 			err := f.PodClient().Delete(pod.ObjectMeta.Name, metav1.NewDeleteOptions(30))
 			framework.ExpectNoError(err)
 
-			gomega.Expect(framework.WaitForPodToDisappear(f.ClientSet, f.Namespace.Name, pod.ObjectMeta.Name, labels.Everything(),
+			gomega.Expect(e2epod.WaitForPodToDisappear(f.ClientSet, f.Namespace.Name, pod.ObjectMeta.Name, labels.Everything(),
 				30*time.Second, 10*time.Minute)).NotTo(gomega.HaveOccurred())
 		}(pod)
 	}

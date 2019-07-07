@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,9 +45,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/kms"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"gopkg.in/gcfg.v1"
+	"k8s.io/api/core/v1"
 	"k8s.io/klog"
 
-	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -199,21 +200,16 @@ const ServiceAnnotationLoadBalancerHCTimeout = "service.beta.kubernetes.io/aws-l
 // service to specify, in seconds, the interval between health checks.
 const ServiceAnnotationLoadBalancerHCInterval = "service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval"
 
+// ServiceAnnotationLoadBalancerEIPAllocations is the annotation used on the
+// service to specify a comma separated list of EIP allocations to use as
+// static IP addresses for the NLB. Only supported on elbv2 (NLB)
+const ServiceAnnotationLoadBalancerEIPAllocations = "service.beta.kubernetes.io/aws-load-balancer-eip-allocations"
+
 // Event key when a volume is stuck on attaching state when being attached to a volume
 const volumeAttachmentStuck = "VolumeAttachmentStuck"
 
 // Indicates that a node has volumes stuck in attaching state and hence it is not fit for scheduling more pods
 const nodeWithImpairedVolumes = "NodeWithImpairedVolumes"
-
-const (
-	// These constants help to identify if a node is a master or a minion
-	labelKeyNodeRole    = "kubernetes.io/role"
-	nodeMasterRole      = "master"
-	nodeMinionRole      = "node"
-	labelKeyNodeMaster  = "node-role.kubernetes.io/master"
-	labelKeyNodeCompute = "node-role.kubernetes.io/compute"
-	labelKeyNodeMinion  = "node-role.kubernetes.io/node"
-)
 
 const (
 	// volumeAttachmentConsecutiveErrorLimit is the number of consecutive errors we will ignore when waiting for a volume to attach/detach
@@ -269,9 +265,6 @@ const MaxReadThenCreateRetries = 30
 // TODO: Remove when user/admin can configure volume types and thus we don't
 // need hardcoded defaults.
 const DefaultVolumeType = "gp2"
-
-// Used to call recognizeWellKnownRegions just once
-var once sync.Once
 
 // Services is an abstraction over AWS, to allow mocking/other implementations
 type Services interface {
@@ -1214,14 +1207,8 @@ func newAWSCloud(cfg CloudConfig, awsServices Services) (*Cloud, error) {
 		return nil, err
 	}
 
-	// Trust that if we get a region from configuration or AWS metadata that it is valid,
-	// and register ECR providers
-	recognizeRegion(regionName)
-
 	if !cfg.Global.DisableStrictZoneCheck {
-		valid := isRegionValid(regionName)
-		if !valid {
-			// This _should_ now be unreachable, given we call RecognizeRegion
+		if !isRegionValid(regionName, metadata) {
 			return nil, fmt.Errorf("not a valid AWS zone (unknown region): %s", zone)
 		}
 	} else {
@@ -1303,12 +1290,41 @@ func newAWSCloud(cfg CloudConfig, awsServices Services) (*Cloud, error) {
 		}
 	}
 
-	// Register regions, in particular for ECR credentials
-	once.Do(func() {
-		recognizeWellKnownRegions()
-	})
-
 	return awsCloud, nil
+}
+
+// isRegionValid accepts an AWS region name and returns if the region is a
+// valid region known to the AWS SDK. Considers the region returned from the
+// EC2 metadata service to be a valid region as it's only available on a host
+// running in a valid AWS region.
+func isRegionValid(region string, metadata EC2Metadata) bool {
+	// Does the AWS SDK know about the region?
+	for _, p := range endpoints.DefaultPartitions() {
+		for r := range p.Regions() {
+			if r == region {
+				return true
+			}
+		}
+	}
+
+	// ap-northeast-3 is purposely excluded from the SDK because it
+	// requires an access request (for more details see):
+	// https://github.com/aws/aws-sdk-go/issues/1863
+	if region == "ap-northeast-3" {
+		return true
+	}
+
+	// Fallback to checking if the region matches the instance metadata region
+	// (ignoring any user overrides). This just accounts for running an old
+	// build of Kubernetes in a new region that wasn't compiled into the SDK
+	// when Kubernetes was built.
+	if az, err := getAvailabilityZone(metadata); err == nil {
+		if r, err := azToRegion(az); err == nil && region == r {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Initialize passes a Kubernetes clientBuilder interface to the cloud provider
@@ -1392,14 +1408,17 @@ func (c *Cloud) NodeAddresses(ctx context.Context, name types.NodeName) ([]v1.No
 			addresses = append(addresses, v1.NodeAddress{Type: v1.NodeExternalIP, Address: externalIP})
 		}
 
-		internalDNS, err := c.metadata.GetMetadata("local-hostname")
-		if err != nil || len(internalDNS) == 0 {
+		localHostname, err := c.metadata.GetMetadata("local-hostname")
+		if err != nil || len(localHostname) == 0 {
 			//TODO: It would be nice to be able to determine the reason for the failure,
 			// but the AWS client masks all failures with the same error description.
 			klog.V(4).Info("Could not determine private DNS from AWS metadata.")
 		} else {
-			addresses = append(addresses, v1.NodeAddress{Type: v1.NodeInternalDNS, Address: internalDNS})
-			addresses = append(addresses, v1.NodeAddress{Type: v1.NodeHostName, Address: internalDNS})
+			hostname, internalDNS := parseMetadataLocalHostname(localHostname)
+			addresses = append(addresses, v1.NodeAddress{Type: v1.NodeHostName, Address: hostname})
+			for _, d := range internalDNS {
+				addresses = append(addresses, v1.NodeAddress{Type: v1.NodeInternalDNS, Address: d})
+			}
 		}
 
 		externalDNS, err := c.metadata.GetMetadata("public-hostname")
@@ -1419,6 +1438,26 @@ func (c *Cloud) NodeAddresses(ctx context.Context, name types.NodeName) ([]v1.No
 		return nil, fmt.Errorf("getInstanceByNodeName failed for %q with %q", name, err)
 	}
 	return extractNodeAddresses(instance)
+}
+
+// parseMetadataLocalHostname parses the output of "local-hostname" metadata.
+// If a DHCP option set is configured for a VPC and it has multiple domain names, GetMetadata
+// returns a string containing first the hostname followed by additional domain names,
+// space-separated. For example, if the DHCP option set has:
+// domain-name = us-west-2.compute.internal a.a b.b c.c d.d;
+// $ curl http://169.254.169.254/latest/meta-data/local-hostname
+// ip-192-168-111-51.us-west-2.compute.internal a.a b.b c.c d.d
+func parseMetadataLocalHostname(metadata string) (string, []string) {
+	localHostnames := strings.Fields(metadata)
+	hostname := localHostnames[0]
+	internalDNS := []string{hostname}
+
+	privateAddress := strings.Split(hostname, ".")[0]
+	for _, h := range localHostnames[1:] {
+		internalDNSAddress := privateAddress + "." + h
+		internalDNS = append(internalDNS, internalDNSAddress)
+	}
+	return hostname, internalDNS
 }
 
 // extractNodeAddresses maps the instance information from EC2 to an array of NodeAddresses
@@ -1608,77 +1647,69 @@ func (c *Cloud) InstanceType(ctx context.Context, nodeName types.NodeName) (stri
 // GetCandidateZonesForDynamicVolume retrieves  a list of all the zones in which nodes are running
 // It currently involves querying all instances
 func (c *Cloud) GetCandidateZonesForDynamicVolume() (sets.String, error) {
-	zones := sets.NewString()
+	// We don't currently cache this; it is currently used only in volume
+	// creation which is expected to be a comparatively rare occurrence.
 
-	// TODO: list from cache?
-	nodes, err := c.kubeClient.CoreV1().Nodes().List(metav1.ListOptions{})
+	// TODO: Caching / expose v1.Nodes to the cloud provider?
+	// TODO: We could also query for subnets, I think
+
+	// Note: It is more efficient to call the EC2 API twice with different tag
+	// filters than to call it once with a tag filter that results in a logical
+	// OR. For really large clusters the logical OR will result in EC2 API rate
+	// limiting.
+	instances := []*ec2.Instance{}
+
+	baseFilters := []*ec2.Filter{newEc2Filter("instance-state-name", "running")}
+
+	filters := c.tagging.addFilters(baseFilters)
+	di, err := c.describeInstances(filters)
 	if err != nil {
-		klog.Errorf("Failed to get nodes from api server: %#v", err)
 		return nil, err
 	}
 
-	for _, n := range nodes.Items {
-		if !c.isNodeReady(&n) {
-			klog.V(4).Infof("Ignoring not ready node %q in zone discovery", n.Name)
+	instances = append(instances, di...)
+
+	if c.tagging.usesLegacyTags {
+		filters = c.tagging.addLegacyFilters(baseFilters)
+		di, err = c.describeInstances(filters)
+		if err != nil {
+			return nil, err
+		}
+
+		instances = append(instances, di...)
+	}
+
+	if len(instances) == 0 {
+		return nil, fmt.Errorf("no instances returned")
+	}
+
+	zones := sets.NewString()
+
+	for _, instance := range instances {
+		// We skip over master nodes, if the installation tool labels them with one of the well-known master labels
+		// This avoids creating a volume in a zone where only the master is running - e.g. #34583
+		// This is a short-term workaround until the scheduler takes care of zone selection
+		master := false
+		for _, tag := range instance.Tags {
+			tagKey := aws.StringValue(tag.Key)
+			if awsTagNameMasterRoles.Has(tagKey) {
+				master = true
+			}
+		}
+
+		if master {
+			klog.V(4).Infof("Ignoring master instance %q in zone discovery", aws.StringValue(instance.InstanceId))
 			continue
 		}
-		// In some cluster provisioning software, a node can be both a minion and a master. Therefore we white-list
-		// here, and only filter out node that is not minion AND is labeled as master explicitly
-		if c.isMinionNode(&n) || !c.isMasterNode(&n) {
-			if zone, ok := n.Labels[v1.LabelZoneFailureDomain]; ok {
-				zones.Insert(zone)
-			} else {
-				klog.Warningf("Node %s does not have zone label, ignore for zone discovery.", n.Name)
-			}
-		} else {
-			klog.V(4).Infof("Ignoring master node %q in zone discovery", n.Name)
+
+		if instance.Placement != nil {
+			zone := aws.StringValue(instance.Placement.AvailabilityZone)
+			zones.Insert(zone)
 		}
 	}
 
 	klog.V(2).Infof("Found instances in zones %s", zones)
 	return zones, nil
-}
-
-// isNodeReady checks node condition and return true if NodeReady is marked as true
-func (c *Cloud) isNodeReady(node *v1.Node) bool {
-	for _, c := range node.Status.Conditions {
-		if c.Type == v1.NodeReady {
-			return c.Status == v1.ConditionTrue
-		}
-	}
-	return false
-}
-
-// isMasterNode checks if the node is labeled as master
-func (c *Cloud) isMasterNode(node *v1.Node) bool {
-	// Master node has one or more of the following labels:
-	//
-	// 	kubernetes.io/role: master
-	//	node-role.kubernetes.io/master: ""
-	//	node-role.kubernetes.io/master: "true"
-	if val, ok := node.Labels[labelKeyNodeMaster]; ok && val != "false" {
-		return true
-	} else if role, ok := node.Labels[labelKeyNodeRole]; ok && role == nodeMasterRole {
-		return true
-	}
-	return false
-}
-
-// isMinionNode checks if the node is labeled as minion
-func (c *Cloud) isMinionNode(node *v1.Node) bool {
-	// Minion node has one or more oof the following labels:
-	//
-	// 	kubernetes.io/role: "node"
-	//	node-role.kubernetes.io/compute: "true"
-	//	node-role.kubernetes.io/node: ""
-	if val, ok := node.Labels[labelKeyNodeMinion]; ok && val != "false" {
-		return true
-	} else if val, ok := node.Labels[labelKeyNodeCompute]; ok && val != "false" {
-		return true
-	} else if role, ok := node.Labels[labelKeyNodeRole]; ok && role == nodeMinionRole {
-		return true
-	}
-	return false
 }
 
 // GetZone implements Zones.GetZone
@@ -3279,9 +3310,16 @@ func (c *Cloud) findELBSubnets(internalELB bool) ([]string, error) {
 		continue
 	}
 
+	var azNames []string
+	for key := range subnetsByAZ {
+		azNames = append(azNames, key)
+	}
+
+	sort.Strings(azNames)
+
 	var subnetIDs []string
-	for _, subnet := range subnetsByAZ {
-		subnetIDs = append(subnetIDs, aws.StringValue(subnet.SubnetId))
+	for _, key := range azNames {
+		subnetIDs = append(subnetIDs, aws.StringValue(subnetsByAZ[key].SubnetId))
 	}
 
 	return subnetIDs, nil
@@ -3577,7 +3615,7 @@ func (c *Cloud) EnsureLoadBalancer(ctx context.Context, clusterName string, apiS
 			sourceRangeCidrs = append(sourceRangeCidrs, "0.0.0.0/0")
 		}
 
-		err = c.updateInstanceSecurityGroupsForNLB(v2Mappings, instances, loadBalancerName, sourceRangeCidrs)
+		err = c.updateInstanceSecurityGroupsForNLB(loadBalancerName, instances, sourceRangeCidrs, v2Mappings)
 		if err != nil {
 			klog.Warningf("Error opening ingress rules for the load balancer to the instances: %q", err)
 			return nil, err
@@ -4156,99 +4194,7 @@ func (c *Cloud) EnsureLoadBalancerDeleted(ctx context.Context, clusterName strin
 			}
 		}
 
-		{
-			var matchingGroups []*ec2.SecurityGroup
-			{
-				// Server side filter
-				describeRequest := &ec2.DescribeSecurityGroupsInput{}
-				describeRequest.Filters = []*ec2.Filter{
-					newEc2Filter("ip-permission.protocol", "tcp"),
-				}
-				response, err := c.ec2.DescribeSecurityGroups(describeRequest)
-				if err != nil {
-					return fmt.Errorf("Error querying security groups for NLB: %q", err)
-				}
-				for _, sg := range response {
-					if !c.tagging.hasClusterTag(sg.Tags) {
-						continue
-					}
-					matchingGroups = append(matchingGroups, sg)
-				}
-
-				// client-side filter out groups that don't have IP Rules we've
-				// annotated for this service
-				matchingGroups = filterForIPRangeDescription(matchingGroups, loadBalancerName)
-			}
-
-			{
-				clientRule := fmt.Sprintf("%s=%s", NLBClientRuleDescription, loadBalancerName)
-				mtuRule := fmt.Sprintf("%s=%s", NLBMtuDiscoveryRuleDescription, loadBalancerName)
-				healthRule := fmt.Sprintf("%s=%s", NLBHealthCheckRuleDescription, loadBalancerName)
-
-				for i := range matchingGroups {
-					removes := []*ec2.IpPermission{}
-					for j := range matchingGroups[i].IpPermissions {
-
-						v4rangesToRemove := []*ec2.IpRange{}
-						v6rangesToRemove := []*ec2.Ipv6Range{}
-
-						// Find IpPermission that contains k8s description
-						// If we removed the whole IpPermission, it could contain other non-k8s specified ranges
-						for k := range matchingGroups[i].IpPermissions[j].IpRanges {
-							description := aws.StringValue(matchingGroups[i].IpPermissions[j].IpRanges[k].Description)
-							if description == clientRule || description == mtuRule || description == healthRule {
-								v4rangesToRemove = append(v4rangesToRemove, matchingGroups[i].IpPermissions[j].IpRanges[k])
-							}
-						}
-
-						// Find IpPermission that contains k8s description
-						// If we removed the whole IpPermission, it could contain other non-k8s specified rangesk
-						for k := range matchingGroups[i].IpPermissions[j].Ipv6Ranges {
-							description := aws.StringValue(matchingGroups[i].IpPermissions[j].Ipv6Ranges[k].Description)
-							if description == clientRule || description == mtuRule || description == healthRule {
-								v6rangesToRemove = append(v6rangesToRemove, matchingGroups[i].IpPermissions[j].Ipv6Ranges[k])
-							}
-						}
-
-						// ipv4 and ipv6 removals cannot be included in the same permission
-						if len(v4rangesToRemove) > 0 {
-							// create a new *IpPermission to not accidentally remove UserIdGroupPairs
-							removedPermission := &ec2.IpPermission{
-								FromPort:   matchingGroups[i].IpPermissions[j].FromPort,
-								IpProtocol: matchingGroups[i].IpPermissions[j].IpProtocol,
-								IpRanges:   v4rangesToRemove,
-								ToPort:     matchingGroups[i].IpPermissions[j].ToPort,
-							}
-							removes = append(removes, removedPermission)
-						}
-						if len(v6rangesToRemove) > 0 {
-							// create a new *IpPermission to not accidentally remove UserIdGroupPairs
-							removedPermission := &ec2.IpPermission{
-								FromPort:   matchingGroups[i].IpPermissions[j].FromPort,
-								IpProtocol: matchingGroups[i].IpPermissions[j].IpProtocol,
-								Ipv6Ranges: v6rangesToRemove,
-								ToPort:     matchingGroups[i].IpPermissions[j].ToPort,
-							}
-							removes = append(removes, removedPermission)
-						}
-
-					}
-					if len(removes) > 0 {
-						changed, err := c.removeSecurityGroupIngress(aws.StringValue(matchingGroups[i].GroupId), removes)
-						if err != nil {
-							return err
-						}
-						if !changed {
-							klog.Warning("Revoking ingress was not needed; concurrent change? groupId=", *matchingGroups[i].GroupId)
-						}
-					}
-
-				}
-
-			}
-
-		}
-		return nil
+		return c.updateInstanceSecurityGroupsForNLB(loadBalancerName, nil, nil, nil)
 	}
 
 	lb, err := c.describeLoadBalancer(loadBalancerName)

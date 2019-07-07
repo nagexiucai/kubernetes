@@ -96,11 +96,10 @@ go_library(
         "//pkg/volume/flocker:go_default_library",
         "//pkg/volume/gcepd:go_default_library",
         "//pkg/volume/glusterfs:go_default_library",
-        "//pkg/volume/host_path:go_default_library",
+        "//pkg/volume/hostpath:go_default_library",
         "//pkg/volume/iscsi:go_default_library",
         "//pkg/volume/local:go_default_library",
         "//pkg/volume/nfs:go_default_library",
-        "//pkg/volume/photon_pd:go_default_library",
         "//pkg/volume/portworx:go_default_library",
         "//pkg/volume/quobyte:go_default_library",
         "//pkg/volume/rbd:go_default_library",
@@ -142,6 +141,7 @@ go_library(
         "//vendor/github.com/spf13/cobra:go_default_library",
         "//vendor/k8s.io/klog:go_default_library",
         "//vendor/k8s.io/utils/exec:go_default_library",
+        "//vendor/k8s.io/utils/net:go_default_library",
     ],
 )
 

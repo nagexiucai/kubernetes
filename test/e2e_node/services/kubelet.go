@@ -91,8 +91,9 @@ func RunKubelet() {
 
 const (
 	// Ports of different e2e services.
-	kubeletPort          = "10250"
-	kubeletReadOnlyPort  = "10255"
+	kubeletPort         = "10250"
+	kubeletReadOnlyPort = "10255"
+	// KubeletRootDirectory specifies the directory where the kubelet runtime information is stored.
 	KubeletRootDirectory = "/var/lib/kubelet"
 	// Health check url of kubelet
 	kubeletHealthCheckURL = "http://127.0.0.1:" + kubeletReadOnlyPort + "/healthz"
@@ -258,8 +259,7 @@ func (e *E2EServices) startKubelet() (*server, error) {
 	cmdArgs = append(cmdArgs,
 		"--kubeconfig", kubeconfigPath,
 		"--root-dir", KubeletRootDirectory,
-		"--v", LOG_VERBOSITY_LEVEL, "--logtostderr",
-		"--allow-privileged=true",
+		"--v", LogVerbosityLevel, "--logtostderr",
 	)
 
 	// Apply test framework feature gates by default. This could also be overridden
@@ -289,10 +289,16 @@ func (e *E2EServices) startKubelet() (*server, error) {
 		return nil, err
 	}
 
+	cniCacheDir, err := getCNICacheDirectory()
+	if err != nil {
+		return nil, err
+	}
+
 	cmdArgs = append(cmdArgs,
 		"--network-plugin=kubenet",
 		"--cni-bin-dir", cniBinDir,
-		"--cni-conf-dir", cniConfDir)
+		"--cni-conf-dir", cniConfDir,
+		"--cni-cache-dir", cniCacheDir)
 
 	// Keep hostname override for convenience.
 	if framework.TestContext.NodeName != "" { // If node name is specified, set hostname override.
@@ -412,9 +418,8 @@ func createRootDirectory(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return os.MkdirAll(path, os.FileMode(0755))
-		} else {
-			return err
 		}
+		return err
 	}
 	return nil
 }
@@ -466,6 +471,15 @@ func getCNIConfDirectory() (string, error) {
 		return "", err
 	}
 	return filepath.Join(cwd, "cni", "net.d"), nil
+}
+
+// getCNICacheDirectory returns CNI Cache directory.
+func getCNICacheDirectory() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cwd, "cni", "cache"), nil
 }
 
 // getDynamicConfigDir returns the directory for dynamic Kubelet configuration

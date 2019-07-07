@@ -18,13 +18,16 @@ package v1beta1
 
 // JSONSchemaProps is a JSON-Schema following Specification Draft 4 (http://json-schema.org/).
 type JSONSchemaProps struct {
-	ID                   string                     `json:"id,omitempty" protobuf:"bytes,1,opt,name=id"`
-	Schema               JSONSchemaURL              `json:"$schema,omitempty" protobuf:"bytes,2,opt,name=schema"`
-	Ref                  *string                    `json:"$ref,omitempty" protobuf:"bytes,3,opt,name=ref"`
-	Description          string                     `json:"description,omitempty" protobuf:"bytes,4,opt,name=description"`
-	Type                 string                     `json:"type,omitempty" protobuf:"bytes,5,opt,name=type"`
-	Format               string                     `json:"format,omitempty" protobuf:"bytes,6,opt,name=format"`
-	Title                string                     `json:"title,omitempty" protobuf:"bytes,7,opt,name=title"`
+	ID          string        `json:"id,omitempty" protobuf:"bytes,1,opt,name=id"`
+	Schema      JSONSchemaURL `json:"$schema,omitempty" protobuf:"bytes,2,opt,name=schema"`
+	Ref         *string       `json:"$ref,omitempty" protobuf:"bytes,3,opt,name=ref"`
+	Description string        `json:"description,omitempty" protobuf:"bytes,4,opt,name=description"`
+	Type        string        `json:"type,omitempty" protobuf:"bytes,5,opt,name=type"`
+	Format      string        `json:"format,omitempty" protobuf:"bytes,6,opt,name=format"`
+	Title       string        `json:"title,omitempty" protobuf:"bytes,7,opt,name=title"`
+	// default is a default value for undefined object fields.
+	// Defaulting is an alpha feature under the CustomResourceDefaulting feature gate.
+	// Defaulting requires spec.preserveUnknownFields to be false.
 	Default              *JSON                      `json:"default,omitempty" protobuf:"bytes,8,opt,name=default"`
 	Maximum              *float64                   `json:"maximum,omitempty" protobuf:"bytes,9,opt,name=maximum"`
 	ExclusiveMaximum     bool                       `json:"exclusiveMaximum,omitempty" protobuf:"bytes,10,opt,name=exclusiveMaximum"`
@@ -61,7 +64,8 @@ type JSONSchemaProps struct {
 	// in the validation schema. This affects fields recursively,
 	// but switches back to normal pruning behaviour if nested
 	// properties or additionalProperties are specified in the schema.
-	XPreserveUnknownFields bool `json:"x-kubernetes-preserve-unknown-fields,omitempty" protobuf:"bytes,38,opt,name=xKubernetesPreserveUnknownFields"`
+	// This can either be true or undefined. False is forbidden.
+	XPreserveUnknownFields *bool `json:"x-kubernetes-preserve-unknown-fields,omitempty" protobuf:"bytes,38,opt,name=xKubernetesPreserveUnknownFields"`
 
 	// x-kubernetes-embedded-resource defines that the value is an
 	// embedded Kubernetes runtime.Object, with TypeMeta and

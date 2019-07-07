@@ -36,7 +36,7 @@ import (
 	kubeadmutil "k8s.io/kubernetes/cmd/kubeadm/app/util"
 	staticpodutil "k8s.io/kubernetes/cmd/kubeadm/app/util/staticpod"
 	authzmodes "k8s.io/kubernetes/pkg/kubeapiserver/authorizer/modes"
-	"k8s.io/kubernetes/pkg/master/ports"
+	utilsnet "k8s.io/utils/net"
 )
 
 // CreateInitStaticPodManifestFiles will write all static pod manifest files needed to bring up the control plane.
@@ -69,7 +69,7 @@ func GetStaticPodSpecs(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmap
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Command:         getControllerManagerCommand(cfg, k8sVersion),
 			VolumeMounts:    staticpodutil.VolumeMountMapToSlice(mounts.GetVolumeMounts(kubeadmconstants.KubeControllerManager)),
-			LivenessProbe:   livenessProbe(staticpodutil.GetControllerManagerProbeAddress(cfg), ports.InsecureKubeControllerManagerPort, v1.URISchemeHTTP),
+			LivenessProbe:   livenessProbe(staticpodutil.GetControllerManagerProbeAddress(cfg), kubeadmconstants.InsecureKubeControllerManagerPort, v1.URISchemeHTTP),
 			Resources:       staticpodutil.ComponentResources("200m"),
 			Env:             getProxyEnvVars(),
 		}, mounts.GetVolumes(kubeadmconstants.KubeControllerManager)),
@@ -79,7 +79,7 @@ func GetStaticPodSpecs(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmap
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Command:         getSchedulerCommand(cfg),
 			VolumeMounts:    staticpodutil.VolumeMountMapToSlice(mounts.GetVolumeMounts(kubeadmconstants.KubeScheduler)),
-			LivenessProbe:   livenessProbe(staticpodutil.GetSchedulerProbeAddress(cfg), ports.InsecureSchedulerPort, v1.URISchemeHTTP),
+			LivenessProbe:   livenessProbe(staticpodutil.GetSchedulerProbeAddress(cfg), kubeadmconstants.InsecureSchedulerPort, v1.URISchemeHTTP),
 			Resources:       staticpodutil.ComponentResources("100m"),
 			Env:             getProxyEnvVars(),
 		}, mounts.GetVolumes(kubeadmconstants.KubeScheduler)),
@@ -241,7 +241,7 @@ func getAuthzModes(authzModeExtraArgs string) string {
 func calcNodeCidrSize(podSubnet string) string {
 	maskSize := "24"
 	if ip, podCidr, err := net.ParseCIDR(podSubnet); err == nil {
-		if ip.To4() == nil {
+		if utilsnet.IsIPv6(ip) {
 			var nodeCidrSize int
 			podNetSize, totalBits := podCidr.Mask.Size()
 			switch {
@@ -297,6 +297,9 @@ func getControllerManagerCommand(cfg *kubeadmapi.ClusterConfiguration, k8sVersio
 		defaultArguments["allocate-node-cidrs"] = "true"
 		defaultArguments["cluster-cidr"] = cfg.Networking.PodSubnet
 		defaultArguments["node-cidr-mask-size"] = maskSize
+		if cfg.Networking.ServiceSubnet != "" {
+			defaultArguments["service-cluster-ip-range"] = cfg.Networking.ServiceSubnet
+		}
 	}
 
 	command := []string{"kube-controller-manager"}

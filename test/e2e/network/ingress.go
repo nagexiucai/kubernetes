@@ -27,7 +27,7 @@ import (
 	compute "google.golang.org/api/compute/v1"
 
 	v1 "k8s.io/api/core/v1"
-	rbacv1beta1 "k8s.io/api/rbac/v1beta1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -41,7 +41,6 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework/providers/gce"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 )
 
 const (
@@ -64,11 +63,11 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 
 		// this test wants powerful permissions.  Since the namespace names are unique, we can leave this
 		// lying around so we don't have to race any caches
-		err := auth.BindClusterRole(jig.Client.RbacV1beta1(), "cluster-admin", f.Namespace.Name,
-			rbacv1beta1.Subject{Kind: rbacv1beta1.ServiceAccountKind, Namespace: f.Namespace.Name, Name: "default"})
+		err := auth.BindClusterRole(jig.Client.RbacV1(), "cluster-admin", f.Namespace.Name,
+			rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: f.Namespace.Name, Name: "default"})
 		framework.ExpectNoError(err)
 
-		err = auth.WaitForAuthorizationUpdate(jig.Client.AuthorizationV1beta1(),
+		err = auth.WaitForAuthorizationUpdate(jig.Client.AuthorizationV1(),
 			serviceaccount.MakeUsername(f.Namespace.Name, "default"),
 			"", "create", schema.GroupResource{Resource: "pods"}, true)
 		framework.ExpectNoError(err)
@@ -94,7 +93,7 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				Cloud:  framework.TestContext.CloudConfig,
 			}
 			err := gceController.Init()
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 		})
 
 		// Platform specific cleanup
@@ -110,7 +109,8 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			jig.TryDeleteIngress()
 
 			ginkgo.By("Cleaning up cloud resources")
-			gomega.Expect(gceController.CleanupIngressController()).NotTo(gomega.HaveOccurred())
+			err := gceController.CleanupIngressController()
+			framework.ExpectNoError(err)
 		})
 
 		ginkgo.It("should conform to Ingress spec", func() {
@@ -143,7 +143,7 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			}
 			for i, host := range hosts {
 				err := jig.WaitForIngressWithCert(true, []string{host}, certs[i])
-				gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
+				framework.ExpectNoError(err, fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
 			}
 
 			ginkgo.By("Remove all but one of the certs on the ingress.")
@@ -153,13 +153,13 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 
 			ginkgo.By("Test that the remaining cert is properly served.")
 			err := jig.WaitForIngressWithCert(true, []string{hosts[0]}, certs[0])
-			gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
+			framework.ExpectNoError(err, fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
 
 			ginkgo.By("Add back one of the certs that was removed and check that all certs are served.")
 			jig.AddHTTPS(secrets[1], hosts[1])
 			for i, host := range hosts[:2] {
 				err := jig.WaitForIngressWithCert(true, []string{host}, certs[i])
-				gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
+				framework.ExpectNoError(err, fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
 			}
 		})
 
@@ -200,7 +200,7 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				if annotations != nil && (annotations[umKey] != "" || annotations[fwKey] != "" ||
 					annotations[tpKey] != "" || annotations[fwsKey] != "" || annotations[tpsKey] != "" ||
 					annotations[scKey] != "" || annotations[beKey] != "") {
-					framework.Failf("unexpected annotations. Expected to not have annotations for urlmap, forwarding rule, target proxy, ssl cert and backends, got: %v", annotations)
+					e2elog.Failf("unexpected annotations. Expected to not have annotations for urlmap, forwarding rule, target proxy, ssl cert and backends, got: %v", annotations)
 					return true, nil
 				}
 				return false, nil
@@ -209,26 +209,26 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			// Verify that the controller does not create any other resource except instance group.
 			// TODO(59778): Check GCE resources specific to this ingress instead of listing all resources.
 			if len(gceController.ListURLMaps()) != 0 {
-				framework.Failf("unexpected url maps, expected none, got: %v", gceController.ListURLMaps())
+				e2elog.Failf("unexpected url maps, expected none, got: %v", gceController.ListURLMaps())
 			}
 			if len(gceController.ListGlobalForwardingRules()) != 0 {
-				framework.Failf("unexpected forwarding rules, expected none, got: %v", gceController.ListGlobalForwardingRules())
+				e2elog.Failf("unexpected forwarding rules, expected none, got: %v", gceController.ListGlobalForwardingRules())
 			}
 			if len(gceController.ListTargetHTTPProxies()) != 0 {
-				framework.Failf("unexpected target http proxies, expected none, got: %v", gceController.ListTargetHTTPProxies())
+				e2elog.Failf("unexpected target http proxies, expected none, got: %v", gceController.ListTargetHTTPProxies())
 			}
 			if len(gceController.ListTargetHTTPSProxies()) != 0 {
-				framework.Failf("unexpected target https proxies, expected none, got: %v", gceController.ListTargetHTTPProxies())
+				e2elog.Failf("unexpected target https proxies, expected none, got: %v", gceController.ListTargetHTTPProxies())
 			}
 			if len(gceController.ListSslCertificates()) != 0 {
-				framework.Failf("unexpected ssl certificates, expected none, got: %v", gceController.ListSslCertificates())
+				e2elog.Failf("unexpected ssl certificates, expected none, got: %v", gceController.ListSslCertificates())
 			}
 			if len(gceController.ListGlobalBackendServices()) != 0 {
-				framework.Failf("unexpected backend service, expected none, got: %v", gceController.ListGlobalBackendServices())
+				e2elog.Failf("unexpected backend service, expected none, got: %v", gceController.ListGlobalBackendServices())
 			}
 			// Controller does not have a list command for firewall rule. We use get instead.
 			if fw, err := gceController.GetFirewallRuleOrError(); err == nil {
-				framework.Failf("unexpected nil error in getting firewall rule, expected firewall NotFound, got firewall: %v", fw)
+				e2elog.Failf("unexpected nil error in getting firewall rule, expected firewall NotFound, got firewall: %v", fw)
 			}
 
 			// TODO(nikhiljindal): Check the instance group annotation value and verify with a multizone cluster.
@@ -250,7 +250,7 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				Cloud:  framework.TestContext.CloudConfig,
 			}
 			err := gceController.Init()
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 		})
 
 		// Platform specific cleanup
@@ -266,7 +266,8 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			jig.TryDeleteIngress()
 
 			ginkgo.By("Cleaning up cloud resources")
-			gomega.Expect(gceController.CleanupIngressController()).NotTo(gomega.HaveOccurred())
+			err := gceController.CleanupIngressController()
+			framework.ExpectNoError(err)
 		})
 
 		ginkgo.It("should conform to Ingress spec", func() {
@@ -279,7 +280,8 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				t.Execute()
 				ginkgo.By(t.ExitLog)
 				jig.WaitForIngress(true)
-				gomega.Expect(gceController.WaitForNegBackendService(jig.GetServicePorts(false))).NotTo(gomega.HaveOccurred())
+				err := gceController.WaitForNegBackendService(jig.GetServicePorts(false))
+				framework.ExpectNoError(err)
 			}
 		})
 
@@ -288,15 +290,16 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			ginkgo.By("Create a basic HTTP ingress using NEG")
 			jig.CreateIngress(filepath.Join(ingress.IngressManifestPath, "neg"), ns, map[string]string{}, map[string]string{})
 			jig.WaitForIngress(true)
-			gomega.Expect(gceController.WaitForNegBackendService(jig.GetServicePorts(false))).NotTo(gomega.HaveOccurred())
+			err = gceController.WaitForNegBackendService(jig.GetServicePorts(false))
+			framework.ExpectNoError(err)
 
 			ginkgo.By("Switch backend service to use IG")
 			svcList, err := f.ClientSet.CoreV1().Services(ns).List(metav1.ListOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			for _, svc := range svcList.Items {
 				svc.Annotations[ingress.NEGAnnotation] = `{"ingress": false}`
 				_, err = f.ClientSet.CoreV1().Services(ns).Update(&svc)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 			err = wait.Poll(5*time.Second, framework.LoadBalancerPollTimeout, func() (bool, error) {
 				if err := gceController.BackendServiceUsingIG(jig.GetServicePorts(false)); err != nil {
@@ -305,16 +308,16 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				}
 				return true, nil
 			})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Expect backend service to target IG, but failed to observe")
+			framework.ExpectNoError(err, "Expect backend service to target IG, but failed to observe")
 			jig.WaitForIngress(true)
 
 			ginkgo.By("Switch backend service to use NEG")
 			svcList, err = f.ClientSet.CoreV1().Services(ns).List(metav1.ListOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			for _, svc := range svcList.Items {
 				svc.Annotations[ingress.NEGAnnotation] = `{"ingress": true}`
 				_, err = f.ClientSet.CoreV1().Services(ns).Update(&svc)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 			err = wait.Poll(5*time.Second, framework.LoadBalancerPollTimeout, func() (bool, error) {
 				if err := gceController.BackendServiceUsingNEG(jig.GetServicePorts(false)); err != nil {
@@ -323,7 +326,7 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				}
 				return true, nil
 			})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Expect backend service to target NEG, but failed to observe")
+			framework.ExpectNoError(err, "Expect backend service to target NEG, but failed to observe")
 			jig.WaitForIngress(true)
 		})
 
@@ -332,11 +335,12 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			jig.CreateIngress(filepath.Join(ingress.IngressManifestPath, "neg-clusterip"), ns, map[string]string{}, map[string]string{})
 			jig.WaitForIngress(true)
 			svcPorts := jig.GetServicePorts(false)
-			gomega.Expect(gceController.WaitForNegBackendService(svcPorts)).NotTo(gomega.HaveOccurred())
+			err := gceController.WaitForNegBackendService(svcPorts)
+			framework.ExpectNoError(err)
 
 			// ClusterIP ServicePorts have no NodePort
 			for _, sp := range svcPorts {
-				gomega.Expect(sp.NodePort).To(gomega.Equal(int32(0)))
+				framework.ExpectEqual(sp.NodePort, int32(0))
 			}
 		})
 
@@ -344,11 +348,11 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			name := "hostname"
 			scaleAndValidateNEG := func(num int) {
 				scale, err := f.ClientSet.AppsV1().Deployments(ns).GetScale(name, metav1.GetOptions{})
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 				if scale.Spec.Replicas != int32(num) {
 					scale.Spec.Replicas = int32(num)
 					_, err = f.ClientSet.AppsV1().Deployments(ns).UpdateScale(name, scale)
-					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					framework.ExpectNoError(err)
 				}
 				err = wait.Poll(10*time.Second, negUpdateTimeout, func() (bool, error) {
 					res, err := jig.GetDistinctResponseFromIngress()
@@ -358,14 +362,15 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 					e2elog.Logf("Expecting %d backends, got %d", num, res.Len())
 					return res.Len() == num, nil
 				})
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 
 			ginkgo.By("Create a basic HTTP ingress using NEG")
 			jig.CreateIngress(filepath.Join(ingress.IngressManifestPath, "neg"), ns, map[string]string{}, map[string]string{})
 			jig.WaitForIngress(true)
 			jig.WaitForIngressToStable()
-			gomega.Expect(gceController.WaitForNegBackendService(jig.GetServicePorts(false))).NotTo(gomega.HaveOccurred())
+			err := gceController.WaitForNegBackendService(jig.GetServicePorts(false))
+			framework.ExpectNoError(err)
 			// initial replicas number is 1
 			scaleAndValidateNEG(1)
 
@@ -389,14 +394,15 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			jig.CreateIngress(filepath.Join(ingress.IngressManifestPath, "neg"), ns, map[string]string{}, map[string]string{})
 			jig.WaitForIngress(true)
 			jig.WaitForIngressToStable()
-			gomega.Expect(gceController.WaitForNegBackendService(jig.GetServicePorts(false))).NotTo(gomega.HaveOccurred())
+			err := gceController.WaitForNegBackendService(jig.GetServicePorts(false))
+			framework.ExpectNoError(err)
 
 			ginkgo.By(fmt.Sprintf("Scale backend replicas to %d", replicas))
 			scale, err := f.ClientSet.AppsV1().Deployments(ns).GetScale(name, metav1.GetOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			scale.Spec.Replicas = int32(replicas)
 			_, err = f.ClientSet.AppsV1().Deployments(ns).UpdateScale(name, scale)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 
 			err = wait.Poll(10*time.Second, framework.LoadBalancerPollTimeout, func() (bool, error) {
 				res, err := jig.GetDistinctResponseFromIngress()
@@ -405,21 +411,21 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				}
 				return res.Len() == replicas, nil
 			})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 
 			ginkgo.By("Trigger rolling update and observe service disruption")
 			deploy, err := f.ClientSet.AppsV1().Deployments(ns).Get(name, metav1.GetOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			// trigger by changing graceful termination period to 60 seconds
 			gracePeriod := int64(60)
 			deploy.Spec.Template.Spec.TerminationGracePeriodSeconds = &gracePeriod
 			_, err = f.ClientSet.AppsV1().Deployments(ns).Update(deploy)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			err = wait.Poll(10*time.Second, framework.LoadBalancerPollTimeout, func() (bool, error) {
 				res, err := jig.GetDistinctResponseFromIngress()
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 				deploy, err := f.ClientSet.AppsV1().Deployments(ns).Get(name, metav1.GetOptions{})
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 				if int(deploy.Status.UpdatedReplicas) == replicas {
 					if res.Len() == replicas {
 						return true, nil
@@ -431,7 +437,7 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				e2elog.Logf("Waiting for rolling update to finished. Keep sending traffic.")
 				return false, nil
 			})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 		})
 
 		ginkgo.It("should sync endpoints for both Ingress-referenced NEG and standalone NEG", func() {
@@ -440,15 +446,15 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 
 			scaleAndValidateExposedNEG := func(num int) {
 				scale, err := f.ClientSet.AppsV1().Deployments(ns).GetScale(name, metav1.GetOptions{})
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 				if scale.Spec.Replicas != int32(num) {
 					scale.Spec.Replicas = int32(num)
 					_, err = f.ClientSet.AppsV1().Deployments(ns).UpdateScale(name, scale)
-					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					framework.ExpectNoError(err)
 				}
 				err = wait.Poll(10*time.Second, negUpdateTimeout, func() (bool, error) {
 					svc, err := f.ClientSet.CoreV1().Services(ns).Get(name, metav1.GetOptions{})
-					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					framework.ExpectNoError(err)
 
 					var status ingress.NegStatus
 					v, ok := svc.Annotations[ingress.NEGStatusAnnotation]
@@ -481,10 +487,10 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 					}
 
 					gceCloud, err := gce.GetGCECloud()
-					gomega.Expect(err).NotTo(gomega.HaveOccurred())
+					framework.ExpectNoError(err)
 					for _, neg := range status.NetworkEndpointGroups {
 						networkEndpoints, err := gceCloud.ListNetworkEndpoints(neg, gceController.Cloud.Zone, false)
-						gomega.Expect(err).NotTo(gomega.HaveOccurred())
+						framework.ExpectNoError(err)
 						if len(networkEndpoints) != num {
 							e2elog.Logf("Expect number of endpoints to be %d, but got %d", num, len(networkEndpoints))
 							return false, nil
@@ -493,13 +499,14 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 
 					return true, nil
 				})
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 
 			ginkgo.By("Create a basic HTTP ingress using NEG")
 			jig.CreateIngress(filepath.Join(ingress.IngressManifestPath, "neg-exposed"), ns, map[string]string{}, map[string]string{})
 			jig.WaitForIngress(true)
-			gomega.Expect(gceController.WaitForNegBackendService(jig.GetServicePorts(false))).NotTo(gomega.HaveOccurred())
+			err := gceController.WaitForNegBackendService(jig.GetServicePorts(false))
+			framework.ExpectNoError(err)
 			// initial replicas number is 1
 			scaleAndValidateExposedNEG(1)
 
@@ -527,46 +534,46 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			// Add Ingress annotation - NEGs should stay the same.
 			ginkgo.By("Adding NEG Ingress annotation")
 			svcList, err := f.ClientSet.CoreV1().Services(ns).List(metav1.ListOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			for _, svc := range svcList.Items {
 				svc.Annotations[ingress.NEGAnnotation] = `{"ingress":true,"exposed_ports":{"80":{},"443":{}}}`
 				_, err = f.ClientSet.CoreV1().Services(ns).Update(&svc)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 			detectNegAnnotation(f, jig, gceController, ns, name, 2)
 
 			// Modify exposed NEG annotation, but keep ingress annotation
 			ginkgo.By("Modifying exposed NEG annotation, but keep Ingress annotation")
 			svcList, err = f.ClientSet.CoreV1().Services(ns).List(metav1.ListOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			for _, svc := range svcList.Items {
 				svc.Annotations[ingress.NEGAnnotation] = `{"ingress":true,"exposed_ports":{"443":{}}}`
 				_, err = f.ClientSet.CoreV1().Services(ns).Update(&svc)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 			detectNegAnnotation(f, jig, gceController, ns, name, 2)
 
 			// Remove Ingress annotation. Expect 1 NEG
 			ginkgo.By("Disabling Ingress annotation, but keeping one standalone NEG")
 			svcList, err = f.ClientSet.CoreV1().Services(ns).List(metav1.ListOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			for _, svc := range svcList.Items {
 				svc.Annotations[ingress.NEGAnnotation] = `{"ingress":false,"exposed_ports":{"443":{}}}`
 				_, err = f.ClientSet.CoreV1().Services(ns).Update(&svc)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 			detectNegAnnotation(f, jig, gceController, ns, name, 1)
 
 			// Remove NEG annotation entirely. Expect 0 NEGs.
 			ginkgo.By("Removing NEG annotation")
 			svcList, err = f.ClientSet.CoreV1().Services(ns).List(metav1.ListOptions{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			for _, svc := range svcList.Items {
 				delete(svc.Annotations, ingress.NEGAnnotation)
 				// Service cannot be ClusterIP if it's using Instance Groups.
 				svc.Spec.Type = v1.ServiceTypeNodePort
 				_, err = f.ClientSet.CoreV1().Services(ns).Update(&svc)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				framework.ExpectNoError(err)
 			}
 			detectNegAnnotation(f, jig, gceController, ns, name, 0)
 		})
@@ -588,7 +595,7 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 				Cloud:  framework.TestContext.CloudConfig,
 			}
 			err := gceController.Init()
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 
 			// TODO(https://github.com/GoogleCloudPlatform/k8s-multicluster-ingress/issues/19):
 			// Kubemci should reserve a static ip if user has not specified one.
@@ -611,7 +618,8 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			}
 
 			ginkgo.By("Cleaning up cloud resources")
-			gomega.Expect(gceController.CleanupIngressController()).NotTo(gomega.HaveOccurred())
+			err := gceController.CleanupIngressController()
+			framework.ExpectNoError(err)
 		})
 
 		ginkgo.It("should conform to Ingress spec", func() {
@@ -653,16 +661,16 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			filePath := filepath.Join(framework.TestContext.OutputDir, "mci.yaml")
 			output, err := framework.RunKubemciWithKubeconfig("remove-clusters", name, "--ingress="+filePath)
 			if err != nil {
-				framework.Failf("unexpected error in running kubemci remove-clusters command to remove from all clusters: %s", err)
+				e2elog.Failf("unexpected error in running kubemci remove-clusters command to remove from all clusters: %s", err)
 			}
 			if !strings.Contains(output, "You should use kubemci delete to delete the ingress completely") {
-				framework.Failf("unexpected output in removing an ingress from all clusters, expected the output to include: You should use kubemci delete to delete the ingress completely, actual output: %s", output)
+				e2elog.Failf("unexpected output in removing an ingress from all clusters, expected the output to include: You should use kubemci delete to delete the ingress completely, actual output: %s", output)
 			}
 			// Verify that the ingress is still spread to 1 cluster as expected.
 			verifyKubemciStatusHas(name, "is spread across 1 cluster")
 			// remove-clusters should succeed with --force=true
 			if _, err := framework.RunKubemciWithKubeconfig("remove-clusters", name, "--ingress="+filePath, "--force=true"); err != nil {
-				framework.Failf("unexpected error in running kubemci remove-clusters to remove from all clusters with --force=true: %s", err)
+				e2elog.Failf("unexpected error in running kubemci remove-clusters to remove from all clusters with --force=true: %s", err)
 			}
 			verifyKubemciStatusHas(name, "is spread across 0 cluster")
 		})
@@ -756,10 +764,10 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 func verifyKubemciStatusHas(name, expectedSubStr string) {
 	statusStr, err := framework.RunKubemciCmd("get-status", name)
 	if err != nil {
-		framework.Failf("unexpected error in running kubemci get-status %s: %s", name, err)
+		e2elog.Failf("unexpected error in running kubemci get-status %s: %s", name, err)
 	}
 	if !strings.Contains(statusStr, expectedSubStr) {
-		framework.Failf("expected status to have sub string %s, actual status: %s", expectedSubStr, statusStr)
+		e2elog.Failf("expected status to have sub string %s, actual status: %s", expectedSubStr, statusStr)
 	}
 }
 
@@ -768,9 +776,9 @@ func executePresharedCertTest(f *framework.Framework, jig *ingress.TestJig, stat
 	ginkgo.By(fmt.Sprintf("Creating ssl certificate %q on GCE", preSharedCertName))
 	testHostname := "test.ingress.com"
 	cert, key, err := ingress.GenerateRSACerts(testHostname, true)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	framework.ExpectNoError(err)
 	gceCloud, err := gce.GetGCECloud()
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	framework.ExpectNoError(err)
 	defer func() {
 		// We would not be able to delete the cert until ingress controller
 		// cleans up the target proxy that references it.
@@ -786,7 +794,7 @@ func executePresharedCertTest(f *framework.Framework, jig *ingress.TestJig, stat
 			}
 			return true, nil
 		})
-		gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("ginkgo.Failed to delete ssl certificate %q: %v", preSharedCertName, err))
+		framework.ExpectNoError(err, fmt.Sprintf("ginkgo.Failed to delete ssl certificate %q: %v", preSharedCertName, err))
 	}()
 	_, err = gceCloud.CreateSslCertificate(&compute.SslCertificate{
 		Name:        preSharedCertName,
@@ -794,7 +802,7 @@ func executePresharedCertTest(f *framework.Framework, jig *ingress.TestJig, stat
 		PrivateKey:  string(key),
 		Description: "pre-shared cert for ingress testing",
 	})
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("ginkgo.Failed to create ssl certificate %q: %v", preSharedCertName, err))
+	framework.ExpectNoError(err, fmt.Sprintf("ginkgo.Failed to create ssl certificate %q: %v", preSharedCertName, err))
 
 	ginkgo.By("Creating an ingress referencing the pre-shared certificate")
 	// Create an ingress referencing this cert using pre-shared-cert annotation.
@@ -811,7 +819,7 @@ func executePresharedCertTest(f *framework.Framework, jig *ingress.TestJig, stat
 
 	ginkgo.By("Test that ingress works with the pre-shared certificate")
 	err = jig.WaitForIngressWithCert(true, []string{testHostname}, cert)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
+	framework.ExpectNoError(err, fmt.Sprintf("Unexpected error while waiting for ingress: %v", err))
 }
 
 func executeStaticIPHttpsOnlyTest(f *framework.Framework, jig *ingress.TestJig, ipName, ip string) {
@@ -834,14 +842,14 @@ func executeBacksideBacksideHTTPSTest(f *framework.Framework, jig *ingress.TestJ
 	defer func() {
 		ginkgo.By("Cleaning up re-encryption ingress, service and deployment")
 		if errs := jig.DeleteTestResource(f.ClientSet, deployCreated, svcCreated, ingCreated); len(errs) > 0 {
-			framework.Failf("ginkgo.Failed to cleanup re-encryption ingress: %v", errs)
+			e2elog.Failf("ginkgo.Failed to cleanup re-encryption ingress: %v", errs)
 		}
 	}()
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "ginkgo.Failed to create re-encryption ingress")
+	framework.ExpectNoError(err, "ginkgo.Failed to create re-encryption ingress")
 
 	ginkgo.By(fmt.Sprintf("Waiting for ingress %s to come up", ingCreated.Name))
 	ingIP, err := jig.WaitForIngressAddress(f.ClientSet, f.Namespace.Name, ingCreated.Name, framework.LoadBalancerPollTimeout)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "ginkgo.Failed to wait for ingress IP")
+	framework.ExpectNoError(err, "ginkgo.Failed to wait for ingress IP")
 
 	ginkgo.By(fmt.Sprintf("Polling on address %s and verify the backend is serving HTTPS", ingIP))
 	timeoutClient := &http.Client{Timeout: ingress.IngressReqTimeout}
@@ -857,7 +865,7 @@ func executeBacksideBacksideHTTPSTest(f *framework.Framework, jig *ingress.TestJ
 		e2elog.Logf("Poll succeeded, request was served by HTTPS")
 		return true, nil
 	})
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "ginkgo.Failed to verify backside re-encryption ingress")
+	framework.ExpectNoError(err, "ginkgo.Failed to verify backside re-encryption ingress")
 }
 
 func detectNegAnnotation(f *framework.Framework, jig *ingress.TestJig, gceController *gce.IngressController, ns, name string, negs int) {
@@ -897,10 +905,10 @@ func detectNegAnnotation(f *framework.Framework, jig *ingress.TestJig, gceContro
 		}
 
 		gceCloud, err := gce.GetGCECloud()
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
 		for _, neg := range status.NetworkEndpointGroups {
 			networkEndpoints, err := gceCloud.ListNetworkEndpoints(neg, gceController.Cloud.Zone, false)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 			if len(networkEndpoints) != 1 {
 				e2elog.Logf("Expect NEG %s to exist, but got %d", neg, len(networkEndpoints))
 				return false, nil
@@ -914,6 +922,6 @@ func detectNegAnnotation(f *framework.Framework, jig *ingress.TestJig, gceContro
 		}
 		return true, nil
 	}); err != nil {
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
 	}
 }

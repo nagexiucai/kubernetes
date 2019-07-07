@@ -27,6 +27,7 @@ import (
 	"k8s.io/kubernetes/pkg/master/ports"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
+	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	"k8s.io/kubernetes/test/e2e/framework/providers/gce"
 	gcecloud "k8s.io/legacy-cloud-providers/gce"
 
@@ -56,7 +57,7 @@ var _ = SIGDescribe("Firewall rule", func() {
 		cs = f.ClientSet
 		cloudConfig = framework.TestContext.CloudConfig
 		gceCloud, err = gce.GetGCECloud()
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
 	})
 
 	// This test takes around 6 minutes to run
@@ -68,7 +69,7 @@ var _ = SIGDescribe("Firewall rule", func() {
 
 		ginkgo.By("Getting cluster ID")
 		clusterID, err := gce.GetClusterID(cs)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
 		e2elog.Logf("Got cluster ID: %v", clusterID)
 
 		jig := framework.NewServiceTestJig(cs, serviceName)
@@ -76,7 +77,7 @@ var _ = SIGDescribe("Firewall rule", func() {
 		gomega.Expect(nodeList).NotTo(gomega.BeNil())
 		nodesNames := jig.GetNodesNames(framework.MaxNodesForEndpointsTests)
 		if len(nodesNames) <= 0 {
-			framework.Failf("Expect at least 1 node, got: %v", nodesNames)
+			e2elog.Failf("Expect at least 1 node, got: %v", nodesNames)
 		}
 		nodesSet := sets.NewString(nodesNames...)
 
@@ -90,25 +91,28 @@ var _ = SIGDescribe("Firewall rule", func() {
 				svc.Spec.Type = v1.ServiceTypeNodePort
 				svc.Spec.LoadBalancerSourceRanges = nil
 			})
-			gomega.Expect(cs.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)).NotTo(gomega.HaveOccurred())
+			err = cs.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)
+			framework.ExpectNoError(err)
 			ginkgo.By("Waiting for the local traffic health check firewall rule to be deleted")
 			localHCFwName := gce.MakeHealthCheckFirewallNameForLBService(clusterID, cloudprovider.DefaultLoadBalancerName(svc), false)
 			_, err := gce.WaitForFirewallRule(gceCloud, localHCFwName, false, framework.LoadBalancerCleanupTimeout)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 		}()
 		svcExternalIP := svc.Status.LoadBalancer.Ingress[0].IP
 
 		ginkgo.By("Checking if service's firewall rule is correct")
 		lbFw := gce.ConstructFirewallForLBService(svc, cloudConfig.NodeTag)
 		fw, err := gceCloud.GetFirewall(lbFw.Name)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(gce.VerifyFirewallRule(fw, lbFw, cloudConfig.Network, false)).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
+		err = gce.VerifyFirewallRule(fw, lbFw, cloudConfig.Network, false)
+		framework.ExpectNoError(err)
 
 		ginkgo.By("Checking if service's nodes health check firewall rule is correct")
 		nodesHCFw := gce.ConstructHealthCheckFirewallForLBService(clusterID, svc, cloudConfig.NodeTag, true)
 		fw, err = gceCloud.GetFirewall(nodesHCFw.Name)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(gce.VerifyFirewallRule(fw, nodesHCFw, cloudConfig.Network, false)).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
+		err = gce.VerifyFirewallRule(fw, nodesHCFw, cloudConfig.Network, false)
+		framework.ExpectNoError(err)
 
 		// OnlyLocal service is needed to examine which exact nodes the requests are being forwarded to by the Load Balancer on GCE
 		ginkgo.By("Updating LoadBalancer service to ExternalTrafficPolicy=Local")
@@ -118,13 +122,14 @@ var _ = SIGDescribe("Firewall rule", func() {
 
 		ginkgo.By("Waiting for the nodes health check firewall rule to be deleted")
 		_, err = gce.WaitForFirewallRule(gceCloud, nodesHCFw.Name, false, framework.LoadBalancerCleanupTimeout)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
 
 		ginkgo.By("Waiting for the correct local traffic health check firewall rule to be created")
 		localHCFw := gce.ConstructHealthCheckFirewallForLBService(clusterID, svc, cloudConfig.NodeTag, false)
 		fw, err = gce.WaitForFirewallRule(gceCloud, localHCFw.Name, true, framework.LoadBalancerCreateTimeoutDefault)
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		gomega.Expect(gce.VerifyFirewallRule(fw, localHCFw, cloudConfig.Network, false)).NotTo(gomega.HaveOccurred())
+		framework.ExpectNoError(err)
+		err = gce.VerifyFirewallRule(fw, localHCFw, cloudConfig.Network, false)
+		framework.ExpectNoError(err)
 
 		ginkgo.By(fmt.Sprintf("Creating netexec pods on at most %v nodes", framework.MaxNodesForEndpointsTests))
 		for i, nodeName := range nodesNames {
@@ -132,13 +137,15 @@ var _ = SIGDescribe("Firewall rule", func() {
 			jig.LaunchNetexecPodOnNode(f, nodeName, podName, firewallTestHTTPPort, firewallTestUDPPort, true)
 			defer func() {
 				e2elog.Logf("Cleaning up the netexec pod: %v", podName)
-				gomega.Expect(cs.CoreV1().Pods(ns).Delete(podName, nil)).NotTo(gomega.HaveOccurred())
+				err = cs.CoreV1().Pods(ns).Delete(podName, nil)
+				framework.ExpectNoError(err)
 			}()
 		}
 
 		// Send requests from outside of the cluster because internal traffic is whitelisted
 		ginkgo.By("Accessing the external service ip from outside, all non-master nodes should be reached")
-		gomega.Expect(framework.TestHitNodesFromOutside(svcExternalIP, firewallTestHTTPPort, framework.LoadBalancerCreateTimeoutDefault, nodesSet)).NotTo(gomega.HaveOccurred())
+		err = framework.TestHitNodesFromOutside(svcExternalIP, firewallTestHTTPPort, framework.LoadBalancerCreateTimeoutDefault, nodesSet)
+		framework.ExpectNoError(err)
 
 		// Check if there are overlapping tags on the firewall that extend beyond just the vms in our cluster
 		// by removing the tag on one vm and make sure it doesn't get any traffic. This is an imperfect
@@ -158,30 +165,33 @@ var _ = SIGDescribe("Firewall rule", func() {
 			nodesSet.Insert(nodesNames[0])
 			gce.SetInstanceTags(cloudConfig, nodesNames[0], zone, removedTags)
 			// Make sure traffic is recovered before exit
-			gomega.Expect(framework.TestHitNodesFromOutside(svcExternalIP, firewallTestHTTPPort, framework.LoadBalancerCreateTimeoutDefault, nodesSet)).NotTo(gomega.HaveOccurred())
+			err = framework.TestHitNodesFromOutside(svcExternalIP, firewallTestHTTPPort, framework.LoadBalancerCreateTimeoutDefault, nodesSet)
+			framework.ExpectNoError(err)
 		}()
 
 		ginkgo.By("Accessing serivce through the external ip and examine got no response from the node without tags")
-		gomega.Expect(framework.TestHitNodesFromOutsideWithCount(svcExternalIP, firewallTestHTTPPort, framework.LoadBalancerCreateTimeoutDefault, nodesSet, 15)).NotTo(gomega.HaveOccurred())
+		err = framework.TestHitNodesFromOutsideWithCount(svcExternalIP, firewallTestHTTPPort, framework.LoadBalancerCreateTimeoutDefault, nodesSet, 15)
+		framework.ExpectNoError(err)
 	})
 
 	ginkgo.It("should have correct firewall rules for e2e cluster", func() {
 		nodes := framework.GetReadySchedulableNodesOrDie(cs)
 		if len(nodes.Items) <= 0 {
-			framework.Failf("Expect at least 1 node, got: %v", len(nodes.Items))
+			e2elog.Failf("Expect at least 1 node, got: %v", len(nodes.Items))
 		}
 
 		ginkgo.By("Checking if e2e firewall rules are correct")
 		for _, expFw := range gce.GetE2eFirewalls(cloudConfig.MasterName, cloudConfig.MasterTag, cloudConfig.NodeTag, cloudConfig.Network, cloudConfig.ClusterIPRange) {
 			fw, err := gceCloud.GetFirewall(expFw.Name)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(gce.VerifyFirewallRule(fw, expFw, cloudConfig.Network, false)).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
+			err = gce.VerifyFirewallRule(fw, expFw, cloudConfig.Network, false)
+			framework.ExpectNoError(err)
 		}
 
 		ginkgo.By("Checking well known ports on master and nodes are not exposed externally")
-		nodeAddrs := framework.NodeAddresses(nodes, v1.NodeExternalIP)
+		nodeAddrs := e2enode.FirstAddress(nodes, v1.NodeExternalIP)
 		if len(nodeAddrs) == 0 {
-			framework.Failf("did not find any node addresses")
+			e2elog.Failf("did not find any node addresses")
 		}
 
 		masterAddresses := framework.GetAllMasterAddresses(cs)
@@ -198,9 +208,9 @@ var _ = SIGDescribe("Firewall rule", func() {
 func assertNotReachableHTTPTimeout(ip string, port int, timeout time.Duration) {
 	result := framework.PokeHTTP(ip, port, "/", &framework.HTTPPokeParams{Timeout: timeout})
 	if result.Status == framework.HTTPError {
-		framework.Failf("Unexpected error checking for reachability of %s:%d: %v", ip, port, result.Error)
+		e2elog.Failf("Unexpected error checking for reachability of %s:%d: %v", ip, port, result.Error)
 	}
 	if result.Code != 0 {
-		framework.Failf("Was unexpectedly able to reach %s:%d", ip, port)
+		e2elog.Failf("Was unexpectedly able to reach %s:%d", ip, port)
 	}
 }

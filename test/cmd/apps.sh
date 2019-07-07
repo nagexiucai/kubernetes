@@ -31,17 +31,21 @@ run_daemonset_tests() {
   # Command
   kubectl apply -f hack/testdata/rollingupdate-daemonset.yaml "${kube_flags[@]:?}"
   # Template Generation should be 1
-  kube::test::get_object_assert 'daemonsets bind' "{{${template_generation_field:?}}}" '1'
+  kube::test::get_object_assert 'daemonsets bind' "{{${generation_field:?}}}" '1'
   kubectl apply -f hack/testdata/rollingupdate-daemonset.yaml "${kube_flags[@]:?}"
   # Template Generation should stay 1
-  kube::test::get_object_assert 'daemonsets bind' "{{${template_generation_field:?}}}" '1'
+  kube::test::get_object_assert 'daemonsets bind' "{{${generation_field:?}}}" '1'
   # Test set commands
   kubectl set image daemonsets/bind "${kube_flags[@]:?}" "*=k8s.gcr.io/pause:test-cmd"
-  kube::test::get_object_assert 'daemonsets bind' "{{${template_generation_field:?}}}" '2'
+  kube::test::get_object_assert 'daemonsets bind' "{{${generation_field:?}}}" '2'
   kubectl set env daemonsets/bind "${kube_flags[@]:?}" foo=bar
-  kube::test::get_object_assert 'daemonsets bind' "{{${template_generation_field:?}}}" '3'
+  kube::test::get_object_assert 'daemonsets bind' "{{${generation_field:?}}}" '3'
   kubectl set resources daemonsets/bind "${kube_flags[@]:?}" --limits=cpu=200m,memory=512Mi
-  kube::test::get_object_assert 'daemonsets bind' "{{${template_generation_field:?}}}" '4'
+  kube::test::get_object_assert 'daemonsets bind' "{{${generation_field:?}}}" '4'
+
+  # Rollout restart should change generation
+  kubectl rollout restart daemonset/bind "${kube_flags[@]:?}"
+  kube::test::get_object_assert 'daemonsets bind' "{{${generation_field:?}}}" '5'
 
   # Clean up
   kubectl delete -f hack/testdata/rollingupdate-daemonset.yaml "${kube_flags[@]:?}"
@@ -123,12 +127,9 @@ run_kubectl_apply_deployments_tests() {
   # apply new deployment with new template labels
   kubectl apply -f hack/testdata/null-propagation/deployment-l2.yaml "${kube_flags[@]:?}"
   # check right labels exists
-  kube::test::get_object_assert 'deployments my-depl' "{{.spec.template.metadata.labels.l1}}" '<no value>'
-  kube::test::get_object_assert 'deployments my-depl' "{{.spec.selector.matchLabels.l1}}" '<no value>'
+  kube::test::get_object_assert 'deployments my-depl' "{{.spec.template.metadata.labels.l1}}" 'l1'
+  kube::test::get_object_assert 'deployments my-depl' "{{.spec.selector.matchLabels.l1}}" 'l1'
   kube::test::get_object_assert 'deployments my-depl' "{{.metadata.labels.l1}}" '<no value>'
-  kube::test::get_object_assert 'deployments my-depl' "{{.spec.template.metadata.labels.l2}}" 'l2'
-  kube::test::get_object_assert 'deployments my-depl' "{{.spec.selector.matchLabels.l2}}" 'l2'
-  kube::test::get_object_assert 'deployments my-depl' "{{.metadata.labels.l2}}" 'l2'
 
   # cleanup
   # need to explicitly remove replicasets and pods because we changed the deployment selector and orphaned things
@@ -185,24 +186,20 @@ run_deployment_tests() {
   # and old generator was used, iow. old defaults are applied
   output_message=$(kubectl get deployment.apps/test-nginx-extensions -o jsonpath='{.spec.revisionHistoryLimit}')
   kube::test::if_has_not_string "${output_message}" '2'
-  # Ensure we can interact with deployments through extensions and apps endpoints
-  output_message=$(kubectl get deployment.extensions -o=jsonpath='{.items[0].apiVersion}' 2>&1 "${kube_flags[@]:?}")
-  kube::test::if_has_string "${output_message}" 'extensions/v1beta1'
+  # Ensure we can interact with deployments through apps endpoints
   output_message=$(kubectl get deployment.apps -o=jsonpath='{.items[0].apiVersion}' 2>&1 "${kube_flags[@]:?}")
   kube::test::if_has_string "${output_message}" 'apps/v1'
   # Clean up
   kubectl delete deployment test-nginx-extensions "${kube_flags[@]:?}"
 
   # Test kubectl create deployment
-  kubectl create deployment test-nginx-apps --image=k8s.gcr.io/nginx:test-cmd --generator=deployment-basic/apps.v1beta1
+  kubectl create deployment test-nginx-apps --image=k8s.gcr.io/nginx:test-cmd --generator=deployment-basic/apps.v1
   # Post-Condition: Deployment "nginx" is created.
   kube::test::get_object_assert 'deploy test-nginx-apps' "{{${container_name_field:?}}}" 'nginx'
   # and new generator was used, iow. new defaults are applied
   output_message=$(kubectl get deployment/test-nginx-apps -o jsonpath='{.spec.revisionHistoryLimit}')
-  kube::test::if_has_string "${output_message}" '2'
-  # Ensure we can interact with deployments through extensions and apps endpoints
-  output_message=$(kubectl get deployment.extensions -o=jsonpath='{.items[0].apiVersion}' 2>&1 "${kube_flags[@]:?}")
-  kube::test::if_has_string "${output_message}" 'extensions/v1beta1'
+  kube::test::if_has_string "${output_message}" '10'
+  # Ensure we can interact with deployments through apps endpoints
   output_message=$(kubectl get deployment.apps -o=jsonpath='{.items[0].apiVersion}' 2>&1 "${kube_flags[@]:?}")
   kube::test::if_has_string "${output_message}" 'apps/v1'
   # Describe command (resource only) should print detailed information
@@ -487,6 +484,10 @@ run_stateful_set_tests() {
   # doesn't start  the scheduler, so pet-0 will block all others.
   # TODO: test robust scaling in an e2e.
   wait-for-pods-with-label "app=nginx-statefulset" "nginx-0"
+
+  # Rollout restart should change generation
+  kubectl rollout restart statefulset nginx "${kube_flags[@]}"
+  kube::test::get_object_assert 'statefulset nginx' "{{$statefulset_observed_generation}}" '3'
 
   ### Clean up
   kubectl delete -f hack/testdata/rollingupdate-statefulset.yaml "${kube_flags[@]:?}"

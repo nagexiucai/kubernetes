@@ -158,7 +158,7 @@ var _ = SIGDescribe("Servers with support for Table transformation", func() {
 			},
 		}
 		err := c.AuthorizationV1().RESTClient().Post().Resource("selfsubjectaccessreviews").SetHeader("Accept", "application/json;as=Table;v=v1beta1;g=meta.k8s.io").Body(sar).Do().Into(table)
-		gomega.Expect(err).To(gomega.HaveOccurred(), "failed to return error when posting self subject access review: %+v, to a backend that does not implement metadata", sar)
+		framework.ExpectError(err, "failed to return error when posting self subject access review: %+v, to a backend that does not implement metadata", sar)
 		gomega.Expect(err.(errors.APIStatus).Status().Code).To(gomega.Equal(int32(406)))
 	})
 })
@@ -184,7 +184,8 @@ func newTablePod(podName string) *v1.Pod {
 			Containers: []v1.Container{
 				{
 					Name:  containerName,
-					Image: imageutils.GetE2EImage(imageutils.Porter),
+					Image: imageutils.GetE2EImage(imageutils.Agnhost),
+					Args:  []string{"porter"},
 					Env:   []v1.EnvVar{{Name: fmt.Sprintf("SERVE_PORT_%d", port), Value: "foo"}},
 					Ports: []v1.ContainerPort{{ContainerPort: int32(port)}},
 				},

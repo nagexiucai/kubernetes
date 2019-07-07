@@ -504,6 +504,7 @@ func autoConvert_v1beta1_CustomResourceDefinitionSpec_To_apiextensions_CustomRes
 	} else {
 		out.Conversion = nil
 	}
+	out.PreserveUnknownFields = (*bool)(unsafe.Pointer(in.PreserveUnknownFields))
 	return nil
 }
 
@@ -550,6 +551,7 @@ func autoConvert_apiextensions_CustomResourceDefinitionSpec_To_v1beta1_CustomRes
 	} else {
 		out.Conversion = nil
 	}
+	out.PreserveUnknownFields = (*bool)(unsafe.Pointer(in.PreserveUnknownFields))
 	return nil
 }
 
@@ -938,7 +940,7 @@ func autoConvert_v1beta1_JSONSchemaProps_To_apiextensions_JSONSchemaProps(in *JS
 		out.Example = nil
 	}
 	out.Nullable = in.Nullable
-	out.XPreserveUnknownFields = in.XPreserveUnknownFields
+	out.XPreserveUnknownFields = (*bool)(unsafe.Pointer(in.XPreserveUnknownFields))
 	out.XEmbeddedResource = in.XEmbeddedResource
 	out.XIntOrString = in.XIntOrString
 	return nil
@@ -1123,7 +1125,7 @@ func autoConvert_apiextensions_JSONSchemaProps_To_v1beta1_JSONSchemaProps(in *ap
 	} else {
 		out.Example = nil
 	}
-	out.XPreserveUnknownFields = in.XPreserveUnknownFields
+	out.XPreserveUnknownFields = (*bool)(unsafe.Pointer(in.XPreserveUnknownFields))
 	out.XEmbeddedResource = in.XEmbeddedResource
 	out.XIntOrString = in.XIntOrString
 	return nil

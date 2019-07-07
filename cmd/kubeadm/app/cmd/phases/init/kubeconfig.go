@@ -25,7 +25,6 @@ import (
 	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	kubeconfigphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/kubeconfig"
-	"k8s.io/kubernetes/pkg/util/normalizer"
 )
 
 var (
@@ -42,7 +41,7 @@ var (
 		kubeadmconstants.KubeletKubeConfigFileName: {
 			name:  "kubelet",
 			short: "Generate a kubeconfig file for the kubelet to use *only* for cluster bootstrapping purposes",
-			long: normalizer.LongDesc(`
+			long: cmdutil.LongDesc(`
 					Generate the kubeconfig file for the kubelet to use and save it to %s file.
 
 					Please note that this should *only* be used for cluster bootstrapping purposes. After your control plane is up,
@@ -97,6 +96,7 @@ func NewKubeConfigFilePhase(kubeConfigFileName string) workflow.Phase {
 func getKubeConfigPhaseFlags(name string) []string {
 	flags := []string{
 		options.APIServerAdvertiseAddress,
+		options.ControlPlaneEndpoint,
 		options.APIServerBindPort,
 		options.CertificatesDir,
 		options.CfgPath,

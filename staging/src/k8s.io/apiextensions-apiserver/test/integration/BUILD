@@ -11,8 +11,11 @@ go_test(
     srcs = [
         "apply_test.go",
         "basic_test.go",
+        "change_test.go",
+        "defaulting_test.go",
         "finalization_test.go",
         "objectmeta_test.go",
+        "pruning_test.go",
         "registration_test.go",
         "subresources_test.go",
         "table_test.go",
@@ -39,6 +42,7 @@ go_test(
         "//staging/src/k8s.io/apimachinery/pkg/runtime/schema:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/runtime/serializer:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/types:go_default_library",
+        "//staging/src/k8s.io/apimachinery/pkg/util/diff:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/json:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/wait:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/yaml:go_default_library",
@@ -53,6 +57,7 @@ go_test(
         "//vendor/github.com/coreos/etcd/pkg/transport:go_default_library",
         "//vendor/github.com/stretchr/testify/assert:go_default_library",
         "//vendor/github.com/stretchr/testify/require:go_default_library",
+        "//vendor/k8s.io/utils/pointer:go_default_library",
         "//vendor/sigs.k8s.io/yaml:go_default_library",
     ],
 )
@@ -68,7 +73,9 @@ filegroup(
     name = "all-srcs",
     srcs = [
         ":package-srcs",
+        "//staging/src/k8s.io/apiextensions-apiserver/test/integration/conversion:all-srcs",
         "//staging/src/k8s.io/apiextensions-apiserver/test/integration/fixtures:all-srcs",
+        "//staging/src/k8s.io/apiextensions-apiserver/test/integration/storage:all-srcs",
     ],
     tags = ["automanaged"],
 )

@@ -73,13 +73,20 @@ type CustomResourceDefinitionSpec struct {
 
 	// `conversion` defines conversion settings for the CRD.
 	Conversion *CustomResourceConversion
+
+	// preserveUnknownFields disables pruning of object fields which are not
+	// specified in the OpenAPI schema. apiVersion, kind, metadata and known
+	// fields inside metadata are always preserved.
+	// Defaults to true in v1beta and will default to false in v1.
+	PreserveUnknownFields *bool
 }
 
 // CustomResourceConversion describes how to convert different versions of a CR.
 type CustomResourceConversion struct {
 	// `strategy` specifies the conversion strategy. Allowed values are:
 	// - `None`: The converter only change the apiVersion and would not touch any other field in the CR.
-	// - `Webhook`: API Server will call to an external webhook to do the conversion. Additional information is needed for this option.
+	// - `Webhook`: API Server will call to an external webhook to do the conversion. Additional information
+	//   is needed for this option. This requires spec.preserveUnknownFields to be false.
 	Strategy ConversionStrategyType
 
 	// `webhookClientConfig` is the instructions for how to call the webhook if strategy is `Webhook`.
@@ -387,8 +394,11 @@ type CustomResourceSubresourceScale struct {
 	StatusReplicasPath string
 	// LabelSelectorPath defines the JSON path inside of a CustomResource that corresponds to Scale.Status.Selector.
 	// Only JSON paths without the array notation are allowed.
-	// Must be a JSON Path under .status.
+	// Must be a JSON Path under .status or .spec.
 	// Must be set to work with HPA.
+	// The field pointed by this JSON path must be a string field (not a complex selector struct)
+	// which contains a serialized label selector in string form.
+	// More info: https://kubernetes.io/docs/tasks/access-kubernetes-api/custom-resources/custom-resource-definitions#scale-subresource
 	// If there is no value under the given path in the CustomResource, the status label selector value in the /scale
 	// subresource will default to the empty string.
 	// +optional

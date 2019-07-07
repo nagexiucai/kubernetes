@@ -229,6 +229,8 @@ func handleInternal(storage map[string]rest.Storage, admissionControl admission.
 		Linker:          selfLinker,
 		RootScopedKinds: sets.NewString("SimpleRoot"),
 
+		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
+
 		ParameterCodec: parameterCodec,
 
 		Admit: admissionControl,
@@ -440,11 +442,14 @@ func (storage *SimpleRESTStorage) checkContext(ctx context.Context) {
 	storage.actualNamespace, storage.namespacePresent = request.NamespaceFrom(ctx)
 }
 
-func (storage *SimpleRESTStorage) Delete(ctx context.Context, id string, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
+func (storage *SimpleRESTStorage) Delete(ctx context.Context, id string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
 	storage.checkContext(ctx)
 	storage.deleted = id
 	storage.deleteOptions = options
 	if err := storage.errors["delete"]; err != nil {
+		return nil, false, err
+	}
+	if err := deleteValidation(&storage.item); err != nil {
 		return nil, false, err
 	}
 	var obj runtime.Object = &metav1.Status{Status: metav1.StatusSuccess}
@@ -3551,6 +3556,8 @@ func TestParentResourceIsRequired(t *testing.T) {
 		Linker:          selfLinker,
 		RootScopedKinds: sets.NewString("SimpleRoot"),
 
+		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
+
 		Admit: admissionControl,
 
 		GroupVersion:           newGroupVersion,
@@ -3580,6 +3587,8 @@ func TestParentResourceIsRequired(t *testing.T) {
 		Defaulter:       scheme,
 		Typer:           scheme,
 		Linker:          selfLinker,
+
+		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
 
 		Admit: admissionControl,
 
@@ -4192,7 +4201,7 @@ type SimpleRESTStorageWithDeleteCollection struct {
 }
 
 // Delete collection doesn't do much, but let us test this path.
-func (storage *SimpleRESTStorageWithDeleteCollection) DeleteCollection(ctx context.Context, options *metav1.DeleteOptions, listOptions *metainternalversion.ListOptions) (runtime.Object, error) {
+func (storage *SimpleRESTStorageWithDeleteCollection) DeleteCollection(ctx context.Context, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions, listOptions *metainternalversion.ListOptions) (runtime.Object, error) {
 	storage.checkContext(ctx)
 	return nil, nil
 }
@@ -4263,7 +4272,7 @@ func (storage *SimpleXGSubresourceRESTStorage) Get(ctx context.Context, id strin
 	return storage.item.DeepCopyObject(), nil
 }
 
-func (storage *SimpleXGSubresourceRESTStorage) Delete(ctx context.Context, name string, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
+func (storage *SimpleXGSubresourceRESTStorage) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
 	return nil, true, nil
 }
 
@@ -4297,6 +4306,8 @@ func TestXGSubresource(t *testing.T) {
 		Defaulter:       scheme,
 		Typer:           scheme,
 		Linker:          selfLinker,
+
+		EquivalentResourceRegistry: runtime.NewEquivalentResourceRegistry(),
 
 		ParameterCodec: parameterCodec,
 

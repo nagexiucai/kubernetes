@@ -7,6 +7,7 @@ go_library(
         "convert.go",
         "goopenapi.go",
         "structural.go",
+        "unfold.go",
         "validation.go",
         "visitor.go",
         "zz_generated.deepcopy.go",
@@ -31,7 +32,12 @@ filegroup(
 
 filegroup(
     name = "all-srcs",
-    srcs = [":package-srcs"],
+    srcs = [
+        ":package-srcs",
+        "//staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/defaulting:all-srcs",
+        "//staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/objectmeta:all-srcs",
+        "//staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver/schema/pruning:all-srcs",
+    ],
     tags = ["automanaged"],
     visibility = ["//visibility:public"],
 )

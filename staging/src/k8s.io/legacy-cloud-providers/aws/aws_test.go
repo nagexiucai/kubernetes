@@ -36,7 +36,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/kubernetes/fake"
 	cloudvolume "k8s.io/cloud-provider/volume"
 )
 
@@ -700,6 +699,41 @@ func TestNodeAddressesWithMetadata(t *testing.T) {
 	testHasNodeAddress(t, addrs, v1.NodeInternalIP, "192.168.0.1")
 	testHasNodeAddress(t, addrs, v1.NodeInternalIP, "192.168.0.2")
 	testHasNodeAddress(t, addrs, v1.NodeExternalIP, "2.3.4.5")
+}
+
+func TestParseMetadataLocalHostname(t *testing.T) {
+	tests := []struct {
+		name        string
+		metadata    string
+		hostname    string
+		internalDNS []string
+	}{
+		{
+			"single hostname",
+			"ip-172-31-16-168.us-west-2.compute.internal",
+			"ip-172-31-16-168.us-west-2.compute.internal",
+			[]string{"ip-172-31-16-168.us-west-2.compute.internal"},
+		},
+		{
+			"dhcp options set with three additional domain names",
+			"ip-172-31-16-168.us-west-2.compute.internal example.com example.ca example.org",
+			"ip-172-31-16-168.us-west-2.compute.internal",
+			[]string{"ip-172-31-16-168.us-west-2.compute.internal", "ip-172-31-16-168.example.com", "ip-172-31-16-168.example.ca", "ip-172-31-16-168.example.org"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hostname, internalDNS := parseMetadataLocalHostname(test.metadata)
+			if hostname != test.hostname {
+				t.Errorf("got hostname %v, expected %v", hostname, test.hostname)
+			}
+			for i, v := range internalDNS {
+				if v != test.internalDNS[i] {
+					t.Errorf("got an internalDNS %v, expected %v", v, test.internalDNS[i])
+				}
+			}
+		})
+	}
 }
 
 func TestGetRegion(t *testing.T) {
@@ -1835,116 +1869,45 @@ func TestCreateDisk(t *testing.T) {
 	awsServices.ec2.(*MockedFakeEC2).AssertExpectations(t)
 }
 
-func TestGetCandidateZonesForDynamicVolume(t *testing.T) {
-	tests := []struct {
-		name          string
-		labels        map[string]string
-		ready         bool
-		expectedZones sets.String
-	}{
-		{
-			name:          "master node with role label",
-			labels:        map[string]string{labelKeyNodeRole: nodeMasterRole, v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString(),
-		},
-		{
-			name:          "master node with master label empty",
-			labels:        map[string]string{labelKeyNodeMaster: "", v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString(),
-		},
-		{
-			name:          "master node with master label true",
-			labels:        map[string]string{labelKeyNodeMaster: "true", v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString(),
-		},
-		{
-			name:          "master node with master label false",
-			labels:        map[string]string{labelKeyNodeMaster: "false", v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString("us-east-1a"),
-		},
-		{
-			name:          "minion node with role label",
-			labels:        map[string]string{labelKeyNodeRole: nodeMinionRole, v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString("us-east-1a"),
-		},
-		{
-			name:          "minion node with minion label",
-			labels:        map[string]string{labelKeyNodeMinion: "", v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString("us-east-1a"),
-		},
-		{
-			name:          "minion node with compute label",
-			labels:        map[string]string{labelKeyNodeCompute: "true", v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString("us-east-1a"),
-		},
-		{
-			name:          "master and minion node",
-			labels:        map[string]string{labelKeyNodeMaster: "true", labelKeyNodeCompute: "true", v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString("us-east-1a"),
-		},
-		{
-			name:          "node not ready",
-			labels:        map[string]string{v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         false,
-			expectedZones: sets.NewString(),
-		},
-		{
-			name:          "node has no zone",
-			labels:        map[string]string{},
-			ready:         true,
-			expectedZones: sets.NewString(),
-		},
-		{
-			name:          "node with no label",
-			labels:        map[string]string{v1.LabelZoneFailureDomain: "us-east-1a"},
-			ready:         true,
-			expectedZones: sets.NewString("us-east-1a"),
-		},
+func TestRegionIsValid(t *testing.T) {
+	fake := newMockedFakeAWSServices("fakeCluster")
+	fake.selfInstance.Placement = &ec2.Placement{
+		AvailabilityZone: aws.String("pl-fake-999a"),
 	}
 
-	for i, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			awsServices := newMockedFakeAWSServices(TestClusterID)
-			c, _ := newAWSCloud(CloudConfig{}, awsServices)
-			c.kubeClient = fake.NewSimpleClientset()
-			nodeName := fmt.Sprintf("node-%d", i)
-			_, err := c.kubeClient.CoreV1().Nodes().Create(&v1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   nodeName,
-					Labels: test.labels,
-				},
-				Status: genNodeStatus(test.ready),
-			})
-			assert.Nil(t, err)
-			zones, err := c.GetCandidateZonesForDynamicVolume()
-			assert.Nil(t, err)
-			assert.Equal(t, test.expectedZones, zones)
-		})
-	}
-}
+	// This is the legacy list that was removed, using this to ensure we avoid
+	// region regressions if something goes wrong in the SDK
+	regions := []string{
+		"ap-northeast-1",
+		"ap-northeast-2",
+		"ap-northeast-3",
+		"ap-south-1",
+		"ap-southeast-1",
+		"ap-southeast-2",
+		"ca-central-1",
+		"eu-central-1",
+		"eu-west-1",
+		"eu-west-2",
+		"eu-west-3",
+		"sa-east-1",
+		"us-east-1",
+		"us-east-2",
+		"us-west-1",
+		"us-west-2",
+		"cn-north-1",
+		"cn-northwest-1",
+		"us-gov-west-1",
+		"ap-northeast-3",
 
-func genNodeStatus(ready bool) v1.NodeStatus {
-	status := v1.ConditionFalse
-	if ready {
-		status = v1.ConditionTrue
+		// Ensures that we always trust what the metadata service returns
+		"pl-fake-999",
 	}
-	ret := v1.NodeStatus{
-		Conditions: []v1.NodeCondition{
-			{
-				Type:   v1.NodeReady,
-				Status: status,
-			},
-		},
+
+	for _, region := range regions {
+		assert.True(t, isRegionValid(region, fake.metadata), "expected region '%s' to be valid but it was not", region)
 	}
-	return ret
+
+	assert.False(t, isRegionValid("pl-fake-991a", fake.metadata), "expected region 'pl-fake-991' to be invalid but it was not")
 }
 
 func newMockedFakeAWSServices(id string) *FakeAWSServices {

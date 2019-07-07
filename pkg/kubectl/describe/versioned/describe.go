@@ -65,17 +65,17 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/reference"
 	"k8s.io/klog"
+	"k8s.io/kubectl/pkg/util/certificate"
+	deploymentutil "k8s.io/kubectl/pkg/util/deployment"
+	"k8s.io/kubectl/pkg/util/event"
+	"k8s.io/kubectl/pkg/util/fieldpath"
+	"k8s.io/kubectl/pkg/util/qos"
+	"k8s.io/kubectl/pkg/util/rbac"
+	resourcehelper "k8s.io/kubectl/pkg/util/resource"
+	"k8s.io/kubectl/pkg/util/slice"
+	storageutil "k8s.io/kubectl/pkg/util/storage"
 	"k8s.io/kubernetes/pkg/kubectl/describe"
 	"k8s.io/kubernetes/pkg/kubectl/scheme"
-	"k8s.io/kubernetes/pkg/kubectl/util/certificate"
-	deploymentutil "k8s.io/kubernetes/pkg/kubectl/util/deployment"
-	"k8s.io/kubernetes/pkg/kubectl/util/event"
-	"k8s.io/kubernetes/pkg/kubectl/util/fieldpath"
-	"k8s.io/kubernetes/pkg/kubectl/util/qos"
-	"k8s.io/kubernetes/pkg/kubectl/util/rbac"
-	resourcehelper "k8s.io/kubernetes/pkg/kubectl/util/resource"
-	"k8s.io/kubernetes/pkg/kubectl/util/slice"
-	storageutil "k8s.io/kubernetes/pkg/kubectl/util/storage"
 )
 
 // Each level has 2 spaces for PrefixWriter
@@ -696,7 +696,9 @@ func describePod(pod *corev1.Pod, events *corev1.EventList) (string, error) {
 		if len(pod.Status.Message) > 0 {
 			w.Write(LEVEL_0, "Message:\t%s\n", pod.Status.Message)
 		}
+		// remove when .IP field is depreciated
 		w.Write(LEVEL_0, "IP:\t%s\n", pod.Status.PodIP)
+		describePodIPs(pod, w, "")
 		if controlledBy := printController(pod); len(controlledBy) > 0 {
 			w.Write(LEVEL_0, "Controlled By:\t%s\n", controlledBy)
 		}
@@ -751,6 +753,17 @@ func printController(controllee metav1.Object) string {
 		return fmt.Sprintf("%s/%s", controllerRef.Kind, controllerRef.Name)
 	}
 	return ""
+}
+
+func describePodIPs(pod *corev1.Pod, w PrefixWriter, space string) {
+	if len(pod.Status.PodIPs) == 0 {
+		w.Write(LEVEL_0, "%sIPs:\t<none>\n", space)
+		return
+	}
+	w.Write(LEVEL_0, "%sIPs:\n", space)
+	for _, ipInfo := range pod.Status.PodIPs {
+		w.Write(LEVEL_1, "IP:\t%s\n", ipInfo.IP)
+	}
 }
 
 func describeVolumes(volumes []corev1.Volume, w PrefixWriter, space string) {
@@ -2949,8 +2962,13 @@ func describeNode(node *corev1.Node, nodeNonTerminatedPodsList *corev1.PodList, 
 		w.Write(LEVEL_0, " Kubelet Version:\t%s\n", node.Status.NodeInfo.KubeletVersion)
 		w.Write(LEVEL_0, " Kube-Proxy Version:\t%s\n", node.Status.NodeInfo.KubeProxyVersion)
 
+		// remove when .PodCIDR is depreciated
 		if len(node.Spec.PodCIDR) > 0 {
 			w.Write(LEVEL_0, "PodCIDR:\t%s\n", node.Spec.PodCIDR)
+		}
+
+		if len(node.Spec.PodCIDRs) > 0 {
+			w.Write(LEVEL_0, "PodCIDRs:\t%s\n", strings.Join(node.Spec.PodCIDRs, ","))
 		}
 		if len(node.Spec.ProviderID) > 0 {
 			w.Write(LEVEL_0, "ProviderID:\t%s\n", node.Spec.ProviderID)
@@ -3856,6 +3874,11 @@ func describePodSecurityPolicy(psp *policyv1beta1.PodSecurityPolicy) (string, er
 		if len(psp.Spec.AllowedFlexVolumes) > 0 {
 			w.Write(LEVEL_1, "Allowed FlexVolume Types:\t%s\n", flexVolumesToString(psp.Spec.AllowedFlexVolumes))
 		}
+
+		if len(psp.Spec.AllowedCSIDrivers) > 0 {
+			w.Write(LEVEL_1, "Allowed CSI Drivers:\t%s\n", csiDriversToString(psp.Spec.AllowedCSIDrivers))
+		}
+
 		if len(psp.Spec.AllowedUnsafeSysctls) > 0 {
 			w.Write(LEVEL_1, "Allowed Unsafe Sysctls:\t%s\n", sysctlsToString(psp.Spec.AllowedUnsafeSysctls))
 		}
@@ -3919,6 +3942,14 @@ func flexVolumesToString(flexVolumes []policyv1beta1.AllowedFlexVolume) string {
 		volumes = append(volumes, "driver="+flexVolume.Driver)
 	}
 	return stringOrDefaultValue(strings.Join(volumes, ","), "<all>")
+}
+
+func csiDriversToString(csiDrivers []policyv1beta1.AllowedCSIDriver) string {
+	drivers := []string{}
+	for _, csiDriver := range csiDrivers {
+		drivers = append(drivers, "driver="+csiDriver.Name)
+	}
+	return stringOrDefaultValue(strings.Join(drivers, ","), "<all>")
 }
 
 func sysctlsToString(sysctls []string) string {

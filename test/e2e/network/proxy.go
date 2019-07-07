@@ -116,7 +116,7 @@ var _ = SIGDescribe("Proxy", func() {
 					},
 				},
 			})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			framework.ExpectNoError(err)
 
 			// Make an RC with a single pod. The 'porter' image is
 			// a simple server which serves the values of the
@@ -125,7 +125,8 @@ var _ = SIGDescribe("Proxy", func() {
 			pods := []*v1.Pod{}
 			cfg := testutils.RCConfig{
 				Client:       f.ClientSet,
-				Image:        imageutils.GetE2EImage(imageutils.Porter),
+				Image:        imageutils.GetE2EImage(imageutils.Agnhost),
+				Command:      []string{"/agnhost", "porter"},
 				Name:         service.Name,
 				Namespace:    f.Namespace.Name,
 				Replicas:     1,
@@ -160,10 +161,12 @@ var _ = SIGDescribe("Proxy", func() {
 				Labels:      labels,
 				CreatedPods: &pods,
 			}
-			gomega.Expect(framework.RunRC(cfg)).NotTo(gomega.HaveOccurred())
+			err = framework.RunRC(cfg)
+			framework.ExpectNoError(err)
 			defer framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, cfg.Name)
 
-			gomega.Expect(endpoints.WaitForEndpoint(f.ClientSet, f.Namespace.Name, service.Name)).NotTo(gomega.HaveOccurred())
+			err = endpoints.WaitForEndpoint(f.ClientSet, f.Namespace.Name, service.Name)
+			framework.ExpectNoError(err)
 
 			// table constructors
 			// Try proxying through the service and directly to through the pod.
@@ -253,7 +256,7 @@ var _ = SIGDescribe("Proxy", func() {
 					e2elog.Logf("Pod %s has the following error logs: %s", pods[0].Name, body)
 				}
 
-				framework.Failf(strings.Join(errs, "\n"))
+				e2elog.Failf(strings.Join(errs, "\n"))
 			}
 		})
 	})
@@ -297,7 +300,7 @@ func pickNode(cs clientset.Interface) (string, error) {
 
 func nodeProxyTest(f *framework.Framework, prefix, nodeDest string) {
 	node, err := pickNode(f.ClientSet)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	framework.ExpectNoError(err)
 	// TODO: Change it to test whether all requests succeeded when requests
 	// not reaching Kubelet issue is debugged.
 	serviceUnavailableErrors := 0
@@ -308,8 +311,8 @@ func nodeProxyTest(f *framework.Framework, prefix, nodeDest string) {
 			time.Sleep(time.Second)
 			serviceUnavailableErrors++
 		} else {
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(status).To(gomega.Equal(http.StatusOK))
+			framework.ExpectNoError(err)
+			framework.ExpectEqual(status, http.StatusOK)
 			gomega.Expect(d).To(gomega.BeNumerically("<", proxyHTTPCallTimeout))
 		}
 	}
