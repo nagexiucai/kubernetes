@@ -73,11 +73,16 @@ func (fake *fakeKernelCompatTester) IsCompatible() error {
 
 // fakeKernelHandler implements KernelHandler.
 type fakeKernelHandler struct {
-	modules []string
+	modules       []string
+	kernelVersion string
 }
 
 func (fake *fakeKernelHandler) GetModules() ([]string, error) {
 	return fake.modules, nil
+}
+
+func (fake *fakeKernelHandler) GetKernelVersion() (string, error) {
+	return fake.kernelVersion, nil
 }
 
 // This test verifies that NewProxyServer does not crash when CleanupAndExit is true.
@@ -359,16 +364,24 @@ func TestProcessHostnameOverrideFlag(t *testing.T) {
 		name                 string
 		hostnameOverrideFlag string
 		expectedHostname     string
+		expectError          bool
 	}{
 		{
 			name:                 "Hostname from config file",
 			hostnameOverrideFlag: "",
 			expectedHostname:     "foo",
+			expectError:          false,
 		},
 		{
 			name:                 "Hostname from flag",
 			hostnameOverrideFlag: "  bar ",
 			expectedHostname:     "bar",
+			expectError:          false,
+		},
+		{
+			name:                 "Hostname is space",
+			hostnameOverrideFlag: "   ",
+			expectError:          true,
 		},
 	}
 	for _, tc := range testCases {
@@ -381,9 +394,15 @@ func TestProcessHostnameOverrideFlag(t *testing.T) {
 			options.hostnameOverride = tc.hostnameOverrideFlag
 
 			err := options.processHostnameOverrideFlag()
-			assert.NoError(t, err, "unexpected error %v", err)
-			if tc.expectedHostname != options.config.HostnameOverride {
-				t.Fatalf("expected hostname: %s, but got: %s", tc.expectedHostname, options.config.HostnameOverride)
+			if tc.expectError {
+				if err == nil {
+					t.Fatalf("should error for this case %s", tc.name)
+				}
+			} else {
+				assert.NoError(t, err, "unexpected error %v", err)
+				if tc.expectedHostname != options.config.HostnameOverride {
+					t.Fatalf("expected hostname: %s, but got: %s", tc.expectedHostname, options.config.HostnameOverride)
+				}
 			}
 		})
 	}
@@ -393,7 +412,7 @@ func TestConfigChange(t *testing.T) {
 	setUp := func() (*os.File, string, error) {
 		tempDir, err := ioutil.TempDir("", "kubeproxy-config-change")
 		if err != nil {
-			return nil, "", fmt.Errorf("Unable to create temporary directory: %v", err)
+			return nil, "", fmt.Errorf("unable to create temporary directory: %v", err)
 		}
 		fullPath := filepath.Join(tempDir, "kube-proxy-config")
 		file, err := os.Create(fullPath)

@@ -47,8 +47,9 @@ import (
 	"k8s.io/client-go/restmapper"
 	scaleclient "k8s.io/client-go/scale"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
-	"k8s.io/kubernetes/test/e2e/framework/metrics"
+	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2epsp "k8s.io/kubernetes/test/e2e/framework/psp"
 	testutils "k8s.io/kubernetes/test/utils"
 
 	"github.com/onsi/ginkgo"
@@ -112,7 +113,7 @@ type Framework struct {
 	TestSummaries []TestDataSummary
 
 	// Place to keep ClusterAutoscaler metrics from before test in order to compute delta.
-	clusterAutoscalerMetricsBeforeTest metrics.Collection
+	clusterAutoscalerMetricsBeforeTest e2emetrics.Collection
 }
 
 // TestDataSummary is an interface for managing test data.
@@ -162,6 +163,7 @@ func (f *Framework) BeforeEach() {
 	if f.ClientSet == nil {
 		ginkgo.By("Creating a kubernetes client")
 		config, err := LoadConfig()
+		ExpectNoError(err)
 		testDesc := ginkgo.CurrentGinkgoTestDescription()
 		if len(testDesc.ComponentTexts) > 0 {
 			componentTexts := strings.Join(testDesc.ComponentTexts, " ")
@@ -171,7 +173,6 @@ func (f *Framework) BeforeEach() {
 				componentTexts)
 		}
 
-		ExpectNoError(err)
 		config.QPS = f.Options.ClientQPS
 		config.Burst = f.Options.ClientBurst
 		if f.Options.GroupVersion != nil {
@@ -271,7 +272,7 @@ func (f *Framework) BeforeEach() {
 
 	gatherMetricsAfterTest := TestContext.GatherMetricsAfterTest == "true" || TestContext.GatherMetricsAfterTest == "master"
 	if gatherMetricsAfterTest && TestContext.IncludeClusterAutoscalerMetrics {
-		grabber, err := metrics.NewMetricsGrabber(f.ClientSet, f.KubemarkExternalClusterClientSet, !ProviderIs("kubemark"), false, false, false, TestContext.IncludeClusterAutoscalerMetrics)
+		grabber, err := e2emetrics.NewMetricsGrabber(f.ClientSet, f.KubemarkExternalClusterClientSet, !ProviderIs("kubemark"), false, false, false, TestContext.IncludeClusterAutoscalerMetrics)
 		if err != nil {
 			e2elog.Logf("Failed to create MetricsGrabber (skipping ClusterAutoscaler metrics gathering before test): %v", err)
 		} else {
@@ -363,7 +364,7 @@ func (f *Framework) AfterEach() {
 		ginkgo.By("Gathering metrics")
 		// Grab apiserver, scheduler, controller-manager metrics and (optionally) nodes' kubelet metrics.
 		grabMetricsFromKubelets := TestContext.GatherMetricsAfterTest != "master" && !ProviderIs("kubemark")
-		grabber, err := metrics.NewMetricsGrabber(f.ClientSet, f.KubemarkExternalClusterClientSet, grabMetricsFromKubelets, true, true, true, TestContext.IncludeClusterAutoscalerMetrics)
+		grabber, err := e2emetrics.NewMetricsGrabber(f.ClientSet, f.KubemarkExternalClusterClientSet, grabMetricsFromKubelets, true, true, true, TestContext.IncludeClusterAutoscalerMetrics)
 		if err != nil {
 			e2elog.Logf("Failed to create MetricsGrabber (skipping metrics gathering): %v", err)
 		} else {
@@ -371,8 +372,8 @@ func (f *Framework) AfterEach() {
 			if err != nil {
 				e2elog.Logf("MetricsGrabber failed to grab some of the metrics: %v", err)
 			}
-			(*MetricsForE2E)(&received).computeClusterAutoscalerMetricsDelta(f.clusterAutoscalerMetricsBeforeTest)
-			f.TestSummaries = append(f.TestSummaries, (*MetricsForE2E)(&received))
+			(*e2emetrics.ComponentCollection)(&received).ComputeClusterAutoscalerMetricsDelta(f.clusterAutoscalerMetricsBeforeTest)
+			f.TestSummaries = append(f.TestSummaries, (*e2emetrics.ComponentCollection)(&received))
 		}
 	}
 
@@ -406,7 +407,7 @@ func (f *Framework) CreateNamespace(baseName string, labels map[string]string) (
 	f.AddNamespacesToDelete(ns)
 
 	if err == nil && !f.SkipPrivilegedPSPBinding {
-		createPrivilegedPSPBinding(f, ns.Name)
+		e2epsp.CreatePrivilegedPSPBinding(f.ClientSet, ns.Name)
 	}
 
 	return ns, err
@@ -568,7 +569,7 @@ func (f *Framework) CreateServiceForSimpleApp(contPort, svcPort int, appName str
 // CreatePodsPerNodeForSimpleApp creates pods w/ labels.  Useful for tests which make a bunch of pods w/o any networking.
 func (f *Framework) CreatePodsPerNodeForSimpleApp(appName string, podSpec func(n v1.Node) v1.PodSpec, maxCount int) map[string]string {
 	nodes := GetReadySchedulableNodesOrDie(f.ClientSet)
-	labels := map[string]string{
+	podLabels := map[string]string{
 		"app": appName + "-pod",
 	}
 	for i, node := range nodes.Items {
@@ -578,14 +579,14 @@ func (f *Framework) CreatePodsPerNodeForSimpleApp(appName string, podSpec func(n
 			_, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(&v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   fmt.Sprintf(appName+"-pod-%v", i),
-					Labels: labels,
+					Labels: podLabels,
 				},
 				Spec: podSpec(node),
 			})
 			ExpectNoError(err)
 		}
 	}
-	return labels
+	return podLabels
 }
 
 // KubeUser is a struct for managing kubernetes user info.

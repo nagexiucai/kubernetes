@@ -18,7 +18,13 @@ package apimachinery
 
 import (
 	"fmt"
-	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
+	"reflect"
+	"strings"
+	"time"
+
+	"k8s.io/utils/pointer"
+
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -29,20 +35,18 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2edeploy "k8s.io/kubernetes/test/e2e/framework/deployment"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	"k8s.io/kubernetes/test/utils/crd"
 	imageutils "k8s.io/kubernetes/test/utils/image"
-	"k8s.io/utils/pointer"
-	"reflect"
-	"strings"
-	"time"
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
@@ -57,20 +61,6 @@ const (
 	serviceName     = "e2e-test-webhook"
 	servicePort     = 8443
 	roleBindingName = "webhook-auth-reader"
-
-	// The webhook configuration names should not be reused between test instances.
-	crWebhookConfigName                    = "e2e-test-webhook-config-cr"
-	webhookConfigName                      = "e2e-test-webhook-config"
-	attachingPodWebhookConfigName          = "e2e-test-webhook-config-attaching-pod"
-	mutatingWebhookConfigName              = "e2e-test-mutating-webhook-config"
-	podMutatingWebhookConfigName           = "e2e-test-mutating-webhook-pod"
-	webhookFailClosedConfigName            = "e2e-test-webhook-fail-closed"
-	validatingWebhookForWebhooksConfigName = "e2e-test-validating-webhook-for-webhooks-config"
-	mutatingWebhookForWebhooksConfigName   = "e2e-test-mutating-webhook-for-webhooks-config"
-	dummyValidatingWebhookConfigName       = "e2e-test-dummy-validating-webhook-config"
-	dummyMutatingWebhookConfigName         = "e2e-test-dummy-mutating-webhook-config"
-	crdWebhookConfigName                   = "e2e-test-webhook-config-crd"
-	slowWebhookConfigName                  = "e2e-test-webhook-config-slow"
 
 	skipNamespaceLabelKey     = "skip-webhook-admission"
 	skipNamespaceLabelValue   = "yes"
@@ -105,18 +95,18 @@ var _ = SIGDescribe("AdmissionWebhook", func() {
 		framework.SkipUnlessServerVersionGTE(serverWebhookVersion, f.ClientSet.Discovery())
 		framework.SkipUnlessProviderIs("gce", "gke", "local")
 
-		_, err := f.ClientSet.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().List(metav1.ListOptions{})
+		_, err := f.ClientSet.AdmissionregistrationV1().ValidatingWebhookConfigurations().List(metav1.ListOptions{})
 		if errors.IsNotFound(err) {
 			framework.Skipf("dynamic configuration of webhooks requires the admissionregistration.k8s.io group to be enabled")
 		}
+
+		// Make sure the namespace created for the test is labeled to be selected by the webhooks
+		labelNamespace(f, f.Namespace.Name)
 
 		ginkgo.By("Setting up server cert")
 		context = setupServerCert(namespaceName, serviceName)
 		createAuthReaderRoleBinding(f, namespaceName)
 
-		// Note that in 1.9 we will have backwards incompatible change to
-		// admission webhooks, so the image will be updated to 1.9 sometime in
-		// the development 1.9 cycle.
 		deployWebhookAndService(f, imageutils.GetE2EImage(imageutils.Agnhost), context)
 	})
 
@@ -125,13 +115,13 @@ var _ = SIGDescribe("AdmissionWebhook", func() {
 	})
 
 	ginkgo.It("Should be able to deny pod and configmap creation", func() {
-		webhookCleanup := registerWebhook(f, context)
+		webhookCleanup := registerWebhook(f, f.UniqueName, context)
 		defer webhookCleanup()
 		testWebhook(f)
 	})
 
 	ginkgo.It("Should be able to deny attaching pod", func() {
-		webhookCleanup := registerWebhookForAttachingPod(f, context)
+		webhookCleanup := registerWebhookForAttachingPod(f, f.UniqueName, context)
 		defer webhookCleanup()
 		testAttachingPodWebhook(f)
 	})
@@ -142,36 +132,36 @@ var _ = SIGDescribe("AdmissionWebhook", func() {
 			return
 		}
 		defer testcrd.CleanUp()
-		webhookCleanup := registerWebhookForCustomResource(f, context, testcrd)
+		webhookCleanup := registerWebhookForCustomResource(f, f.UniqueName, context, testcrd)
 		defer webhookCleanup()
 		testCustomResourceWebhook(f, testcrd.Crd, testcrd.DynamicClients["v1"])
 		testBlockingCustomResourceDeletion(f, testcrd.Crd, testcrd.DynamicClients["v1"])
 	})
 
 	ginkgo.It("Should unconditionally reject operations on fail closed webhook", func() {
-		webhookCleanup := registerFailClosedWebhook(f, context)
+		webhookCleanup := registerFailClosedWebhook(f, f.UniqueName, context)
 		defer webhookCleanup()
 		testFailClosedWebhook(f)
 	})
 
 	ginkgo.It("Should mutate configmap", func() {
-		webhookCleanup := registerMutatingWebhookForConfigMap(f, context)
+		webhookCleanup := registerMutatingWebhookForConfigMap(f, f.UniqueName, context)
 		defer webhookCleanup()
 		testMutatingConfigMapWebhook(f)
 	})
 
 	ginkgo.It("Should mutate pod and apply defaults after mutation", func() {
-		webhookCleanup := registerMutatingWebhookForPod(f, context)
+		webhookCleanup := registerMutatingWebhookForPod(f, f.UniqueName, context)
 		defer webhookCleanup()
 		testMutatingPodWebhook(f)
 	})
 
 	ginkgo.It("Should not be able to mutate or prevent deletion of webhook configuration objects", func() {
-		validatingWebhookCleanup := registerValidatingWebhookForWebhookConfigurations(f, context)
+		validatingWebhookCleanup := registerValidatingWebhookForWebhookConfigurations(f, f.UniqueName+"blocking", context)
 		defer validatingWebhookCleanup()
-		mutatingWebhookCleanup := registerMutatingWebhookForWebhookConfigurations(f, context)
+		mutatingWebhookCleanup := registerMutatingWebhookForWebhookConfigurations(f, f.UniqueName+"blocking", context)
 		defer mutatingWebhookCleanup()
-		testWebhooksForWebhookConfigurations(f)
+		testWebhooksForWebhookConfigurations(f, f.UniqueName)
 	})
 
 	ginkgo.It("Should mutate custom resource", func() {
@@ -180,13 +170,13 @@ var _ = SIGDescribe("AdmissionWebhook", func() {
 			return
 		}
 		defer testcrd.CleanUp()
-		webhookCleanup := registerMutatingWebhookForCustomResource(f, context, testcrd)
+		webhookCleanup := registerMutatingWebhookForCustomResource(f, f.UniqueName, context, testcrd)
 		defer webhookCleanup()
 		testMutatingCustomResourceWebhook(f, testcrd.Crd, testcrd.DynamicClients["v1"], false)
 	})
 
 	ginkgo.It("Should deny crd creation", func() {
-		crdWebhookCleanup := registerValidatingWebhookForCRD(f, context)
+		crdWebhookCleanup := registerValidatingWebhookForCRD(f, f.UniqueName, context)
 		defer crdWebhookCleanup()
 
 		testCRDDenyWebhook(f)
@@ -198,7 +188,7 @@ var _ = SIGDescribe("AdmissionWebhook", func() {
 			return
 		}
 		defer testcrd.CleanUp()
-		webhookCleanup := registerMutatingWebhookForCustomResource(f, context, testcrd)
+		webhookCleanup := registerMutatingWebhookForCustomResource(f, f.UniqueName, context, testcrd)
 		defer webhookCleanup()
 		testMultiVersionCustomResourceWebhook(f, testcrd)
 	})
@@ -227,34 +217,297 @@ var _ = SIGDescribe("AdmissionWebhook", func() {
 			return
 		}
 		defer testcrd.CleanUp()
-		webhookCleanup := registerMutatingWebhookForCustomResource(f, context, testcrd)
+		webhookCleanup := registerMutatingWebhookForCustomResource(f, f.UniqueName, context, testcrd)
 		defer webhookCleanup()
 		testMutatingCustomResourceWebhook(f, testcrd.Crd, testcrd.DynamicClients["v1"], prune)
 	})
 
 	ginkgo.It("Should honor timeout", func() {
-		policyFail := admissionregistrationv1beta1.Fail
-		policyIgnore := admissionregistrationv1beta1.Ignore
+		policyFail := admissionregistrationv1.Fail
+		policyIgnore := admissionregistrationv1.Ignore
 
 		ginkgo.By("Setting timeout (1s) shorter than webhook latency (5s)")
-		slowWebhookCleanup := registerSlowWebhook(f, context, &policyFail, pointer.Int32Ptr(1))
+		slowWebhookCleanup := registerSlowWebhook(f, f.UniqueName, context, &policyFail, pointer.Int32Ptr(1))
 		testSlowWebhookTimeoutFailEarly(f)
 		slowWebhookCleanup()
 
 		ginkgo.By("Having no error when timeout is shorter than webhook latency and failure policy is ignore")
-		slowWebhookCleanup = registerSlowWebhook(f, context, &policyIgnore, pointer.Int32Ptr(1))
+		slowWebhookCleanup = registerSlowWebhook(f, f.UniqueName, context, &policyIgnore, pointer.Int32Ptr(1))
 		testSlowWebhookTimeoutNoError(f)
 		slowWebhookCleanup()
 
 		ginkgo.By("Having no error when timeout is longer than webhook latency")
-		slowWebhookCleanup = registerSlowWebhook(f, context, &policyFail, pointer.Int32Ptr(10))
+		slowWebhookCleanup = registerSlowWebhook(f, f.UniqueName, context, &policyFail, pointer.Int32Ptr(10))
 		testSlowWebhookTimeoutNoError(f)
 		slowWebhookCleanup()
 
 		ginkgo.By("Having no error when timeout is empty (defaulted to 10s in v1beta1)")
-		slowWebhookCleanup = registerSlowWebhook(f, context, &policyFail, nil)
+		slowWebhookCleanup = registerSlowWebhook(f, f.UniqueName, context, &policyFail, nil)
 		testSlowWebhookTimeoutNoError(f)
 		slowWebhookCleanup()
+	})
+
+	ginkgo.It("patching/updating a validating webhook should work", func() {
+		client := f.ClientSet
+		admissionClient := client.AdmissionregistrationV1()
+
+		ginkgo.By("Creating a validating webhook configuration")
+		hook, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: f.UniqueName,
+			},
+			Webhooks: []admissionregistrationv1.ValidatingWebhook{
+				newDenyConfigMapWebhookFixture(f, context),
+			},
+		})
+		framework.ExpectNoError(err, "Creating validating webhook configuration")
+		defer func() {
+			err := client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(hook.Name, nil)
+			framework.ExpectNoError(err, "Deleting validating webhook configuration")
+		}()
+		ginkgo.By("Creating a configMap that does not comply to the validation webhook rules")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedNonCompliantConfigMap(string(uuid.NewUUID()), f)
+			_, err = client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err == nil {
+				err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+				framework.ExpectNoError(err, "Deleting successfully created configMap")
+				return false, nil
+			}
+			if !strings.Contains(err.Error(), "denied") {
+				return false, err
+			}
+			return true, nil
+		})
+
+		ginkgo.By("Updating a validating webhook configuration's rules to not include the create operation")
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			h, err := admissionClient.ValidatingWebhookConfigurations().Get(f.UniqueName, metav1.GetOptions{})
+			framework.ExpectNoError(err, "Getting validating webhook configuration")
+			h.Webhooks[0].Rules[0].Operations = []admissionregistrationv1.OperationType{admissionregistrationv1.Update}
+			_, err = admissionClient.ValidatingWebhookConfigurations().Update(h)
+			return err
+		})
+		framework.ExpectNoError(err, "Updating validating webhook configuration")
+
+		ginkgo.By("Creating a configMap that does not comply to the validation webhook rules")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedNonCompliantConfigMap(string(uuid.NewUUID()), f)
+			_, err = client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err != nil {
+				if !strings.Contains(err.Error(), "denied") {
+					return false, err
+				}
+				return false, nil
+			}
+			err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+			framework.ExpectNoError(err, "Deleting successfully created configMap")
+			return true, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s to be allowed creation since webhook was updated to not validate create", f.Namespace.Name)
+
+		ginkgo.By("Patching a validating webhook configuration's rules to include the create operation")
+		hook, err = admissionClient.ValidatingWebhookConfigurations().Patch(
+			f.UniqueName,
+			types.JSONPatchType,
+			[]byte(`[{"op": "replace", "path": "/webhooks/0/rules/0/operations", "value": ["CREATE"]}]`))
+		framework.ExpectNoError(err, "Patching validating webhook configuration")
+
+		ginkgo.By("Creating a configMap that does not comply to the validation webhook rules")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedNonCompliantConfigMap(string(uuid.NewUUID()), f)
+			_, err = client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err == nil {
+				err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+				framework.ExpectNoError(err, "Deleting successfully created configMap")
+				return false, nil
+			}
+			if !strings.Contains(err.Error(), "denied") {
+				return false, err
+			}
+			return true, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s to be denied creation by validating webhook", f.Namespace.Name)
+	})
+
+	ginkgo.It("patching/updating a mutating webhook should work", func() {
+		client := f.ClientSet
+		admissionClient := client.AdmissionregistrationV1()
+
+		ginkgo.By("Creating a mutating webhook configuration")
+		hook, err := createMutatingWebhookConfiguration(f, &admissionregistrationv1.MutatingWebhookConfiguration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: f.UniqueName,
+			},
+			Webhooks: []admissionregistrationv1.MutatingWebhook{
+				newMutateConfigMapWebhookFixture(f, context, 1),
+			},
+		})
+		framework.ExpectNoError(err, "Creating mutating webhook configuration")
+		defer func() {
+			err := client.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(hook.Name, nil)
+			framework.ExpectNoError(err, "Deleting mutating webhook configuration")
+		}()
+
+		hook, err = admissionClient.MutatingWebhookConfigurations().Get(f.UniqueName, metav1.GetOptions{})
+		framework.ExpectNoError(err, "Getting mutating webhook configuration")
+		ginkgo.By("Updating a mutating webhook configuration's rules to not include the create operation")
+		hook.Webhooks[0].Rules[0].Operations = []admissionregistrationv1.OperationType{admissionregistrationv1.Update}
+		hook, err = admissionClient.MutatingWebhookConfigurations().Update(hook)
+		framework.ExpectNoError(err, "Updating mutating webhook configuration")
+
+		ginkgo.By("Creating a configMap that should not be mutated")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedToBeMutatedConfigMap(string(uuid.NewUUID()), f)
+			created, err := client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err != nil {
+				return false, err
+			}
+			err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+			framework.ExpectNoError(err, "Deleting successfully created configMap")
+			_, ok := created.Data["mutation-stage-1"]
+			return !ok, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s this is not mutated", f.Namespace.Name)
+
+		ginkgo.By("Patching a mutating webhook configuration's rules to include the create operation")
+		hook, err = admissionClient.MutatingWebhookConfigurations().Patch(
+			f.UniqueName,
+			types.JSONPatchType,
+			[]byte(`[{"op": "replace", "path": "/webhooks/0/rules/0/operations", "value": ["CREATE"]}]`))
+		framework.ExpectNoError(err, "Patching mutating webhook configuration")
+
+		ginkgo.By("Creating a configMap that should be mutated")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedToBeMutatedConfigMap(string(uuid.NewUUID()), f)
+			created, err := client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err != nil {
+				return false, err
+			}
+			err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+			framework.ExpectNoError(err, "Deleting successfully created configMap")
+			_, ok := created.Data["mutation-stage-1"]
+			return ok, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s to be mutated", f.Namespace.Name)
+	})
+
+	ginkgo.It("listing validating webhooks should work", func() {
+		testListSize := 10
+		testUUID := string(uuid.NewUUID())
+
+		for i := 0; i < testListSize; i++ {
+			name := fmt.Sprintf("%s-%d", f.UniqueName, i)
+			_, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   name,
+					Labels: map[string]string{"e2e-list-test-uuid": testUUID},
+				},
+				Webhooks: []admissionregistrationv1.ValidatingWebhook{
+					newDenyConfigMapWebhookFixture(f, context),
+				},
+			})
+			framework.ExpectNoError(err, "Creating validating webhook configuration")
+		}
+		selectorListOpts := metav1.ListOptions{LabelSelector: "e2e-list-test-uuid=" + testUUID}
+
+		ginkgo.By("Listing all of the created validation webhooks")
+		list, err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().List(selectorListOpts)
+		framework.ExpectNoError(err, "Listing validating webhook configurations")
+		framework.ExpectEqual(len(list.Items), testListSize)
+
+		ginkgo.By("Creating a configMap that does not comply to the validation webhook rules")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedNonCompliantConfigMap(string(uuid.NewUUID()), f)
+			_, err = client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err == nil {
+				err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+				framework.ExpectNoError(err, "Deleting successfully created configMap")
+				return false, nil
+			}
+			if !strings.Contains(err.Error(), "denied") {
+				return false, err
+			}
+			return true, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s to be denied creation by validating webhook", f.Namespace.Name)
+
+		ginkgo.By("Deleting the collection of validation webhooks")
+		err = client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().DeleteCollection(nil, selectorListOpts)
+		framework.ExpectNoError(err, "Deleting collection of validating webhook configurations")
+
+		ginkgo.By("Creating a configMap that does not comply to the validation webhook rules")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedNonCompliantConfigMap(string(uuid.NewUUID()), f)
+			_, err = client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err != nil {
+				if !strings.Contains(err.Error(), "denied") {
+					return false, err
+				}
+				return false, nil
+			}
+			err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+			framework.ExpectNoError(err, "Deleting successfully created configMap")
+			return true, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s to be allowed creation since there are no webhooks", f.Namespace.Name)
+	})
+
+	ginkgo.It("listing mutating webhooks should work", func() {
+		testListSize := 10
+		testUUID := string(uuid.NewUUID())
+
+		for i := 0; i < testListSize; i++ {
+			name := fmt.Sprintf("%s-%d", f.UniqueName, i)
+			_, err := createMutatingWebhookConfiguration(f, &admissionregistrationv1.MutatingWebhookConfiguration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   name,
+					Labels: map[string]string{"e2e-list-test-uuid": testUUID},
+				},
+				Webhooks: []admissionregistrationv1.MutatingWebhook{
+					newMutateConfigMapWebhookFixture(f, context, 1),
+				},
+			})
+			framework.ExpectNoError(err, "Creating mutating webhook configuration")
+		}
+		selectorListOpts := metav1.ListOptions{LabelSelector: "e2e-list-test-uuid=" + testUUID}
+
+		ginkgo.By("Listing all of the created validation webhooks")
+		list, err := client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().List(selectorListOpts)
+		framework.ExpectNoError(err, "Listing mutating webhook configurations")
+		framework.ExpectEqual(len(list.Items), testListSize)
+
+		ginkgo.By("Creating a configMap that should be mutated")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedToBeMutatedConfigMap(string(uuid.NewUUID()), f)
+			created, err := client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err != nil {
+				return false, err
+			}
+			err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+			framework.ExpectNoError(err, "Deleting successfully created configMap")
+			_, ok := created.Data["mutation-stage-1"]
+			return ok, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s to be mutated", f.Namespace.Name)
+
+		ginkgo.By("Deleting the collection of validation webhooks")
+		err = client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().DeleteCollection(nil, selectorListOpts)
+		framework.ExpectNoError(err, "Deleting collection of mutating webhook configurations")
+
+		ginkgo.By("Creating a configMap that should not be mutated")
+		err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+			cm := namedToBeMutatedConfigMap(string(uuid.NewUUID()), f)
+			created, err := client.CoreV1().ConfigMaps(f.Namespace.Name).Create(cm)
+			if err != nil {
+				return false, err
+			}
+			err = client.CoreV1().ConfigMaps(f.Namespace.Name).Delete(cm.Name, nil)
+			framework.ExpectNoError(err, "Deleting successfully created configMap")
+			_, ok := created.Data["mutation-stage-1"]
+			return !ok, nil
+		})
+		framework.ExpectNoError(err, "Waiting for configMap in namespace %s this is not mutated", f.Namespace.Name)
 	})
 
 	// TODO: add more e2e tests for mutating webhooks
@@ -413,72 +666,26 @@ func deployWebhookAndService(f *framework.Framework, image string, context *cert
 
 func strPtr(s string) *string { return &s }
 
-func registerWebhook(f *framework.Framework, context *certContext) func() {
+func registerWebhook(f *framework.Framework, configName string, context *certContext) func() {
 	client := f.ClientSet
 	ginkgo.By("Registering the webhook via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := webhookConfigName
 	// A webhook that cannot talk to server, with fail-open policy
 	failOpenHook := failingWebhook(namespace, "fail-open.k8s.io")
-	policyIgnore := admissionregistrationv1beta1.Ignore
+	policyIgnore := admissionregistrationv1.Ignore
 	failOpenHook.FailurePolicy = &policyIgnore
+	failOpenHook.NamespaceSelector = &metav1.LabelSelector{
+		MatchLabels: map[string]string{f.UniqueName: "true"},
+	}
 
-	_, err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+	_, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
-			{
-				Name: "deny-unwanted-pod-container-name-and-label.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
-						APIGroups:   []string{""},
-						APIVersions: []string{"v1"},
-						Resources:   []string{"pods"},
-					},
-				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
-						Namespace: namespace,
-						Name:      serviceName,
-						Path:      strPtr("/pods"),
-						Port:      pointer.Int32Ptr(servicePort),
-					},
-					CABundle: context.signingCert,
-				},
-			},
-			{
-				Name: "deny-unwanted-configmap-data.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create, admissionregistrationv1beta1.Update, admissionregistrationv1beta1.Delete},
-					Rule: admissionregistrationv1beta1.Rule{
-						APIGroups:   []string{""},
-						APIVersions: []string{"v1"},
-						Resources:   []string{"configmaps"},
-					},
-				}},
-				// The webhook skips the namespace that has label "skip-webhook-admission":"yes"
-				NamespaceSelector: &metav1.LabelSelector{
-					MatchExpressions: []metav1.LabelSelectorRequirement{
-						{
-							Key:      skipNamespaceLabelKey,
-							Operator: metav1.LabelSelectorOpNotIn,
-							Values:   []string{skipNamespaceLabelValue},
-						},
-					},
-				},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
-						Namespace: namespace,
-						Name:      serviceName,
-						Path:      strPtr("/configmaps"),
-						Port:      pointer.Int32Ptr(servicePort),
-					},
-					CABundle: context.signingCert,
-				},
-			},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
+			newDenyPodWebhookFixture(f, context),
+			newDenyConfigMapWebhookFixture(f, context),
 			// Server cannot talk to this webhook, so it always fails.
 			// Because this webhook is configured fail-open, request should be admitted after the call fails.
 			failOpenHook,
@@ -490,44 +697,46 @@ func registerWebhook(f *framework.Framework, context *certContext) func() {
 	time.Sleep(10 * time.Second)
 
 	return func() {
-		client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(configName, nil)
+		client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
 	}
 }
 
-func registerWebhookForAttachingPod(f *framework.Framework, context *certContext) func() {
+func registerWebhookForAttachingPod(f *framework.Framework, configName string, context *certContext) func() {
 	client := f.ClientSet
 	ginkgo.By("Registering the webhook via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := attachingPodWebhookConfigName
-	// A webhook that cannot talk to server, with fail-open policy
-	failOpenHook := failingWebhook(namespace, "fail-open.k8s.io")
-	policyIgnore := admissionregistrationv1beta1.Ignore
-	failOpenHook.FailurePolicy = &policyIgnore
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
 
-	_, err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+	_, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			{
 				Name: "deny-attaching-pod.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Connect},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Connect},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{""},
 						APIVersions: []string{"v1"},
 						Resources:   []string{"pods/attach"},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/pods/attach"),
 						Port:      pointer.Int32Ptr(servicePort),
 					},
 					CABundle: context.signingCert,
+				},
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
 				},
 			},
 		},
@@ -538,69 +747,30 @@ func registerWebhookForAttachingPod(f *framework.Framework, context *certContext
 	time.Sleep(10 * time.Second)
 
 	return func() {
-		client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(configName, nil)
+		client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
 	}
 }
 
-func registerMutatingWebhookForConfigMap(f *framework.Framework, context *certContext) func() {
+func registerMutatingWebhookForConfigMap(f *framework.Framework, configName string, context *certContext) func() {
 	client := f.ClientSet
 	ginkgo.By("Registering the mutating configmap webhook via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := mutatingWebhookConfigName
 
-	_, err := client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Create(&admissionregistrationv1beta1.MutatingWebhookConfiguration{
+	_, err := createMutatingWebhookConfiguration(f, &admissionregistrationv1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.MutatingWebhook{
-			{
-				Name: "adding-configmap-data-stage-1.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
-						APIGroups:   []string{""},
-						APIVersions: []string{"v1"},
-						Resources:   []string{"configmaps"},
-					},
-				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
-						Namespace: namespace,
-						Name:      serviceName,
-						Path:      strPtr("/mutating-configmaps"),
-						Port:      pointer.Int32Ptr(servicePort),
-					},
-					CABundle: context.signingCert,
-				},
-			},
-			{
-				Name: "adding-configmap-data-stage-2.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
-						APIGroups:   []string{""},
-						APIVersions: []string{"v1"},
-						Resources:   []string{"configmaps"},
-					},
-				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
-						Namespace: namespace,
-						Name:      serviceName,
-						Path:      strPtr("/mutating-configmaps"),
-						Port:      pointer.Int32Ptr(servicePort),
-					},
-					CABundle: context.signingCert,
-				},
-			},
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
+			newMutateConfigMapWebhookFixture(f, context, 1),
+			newMutateConfigMapWebhookFixture(f, context, 2),
 		},
 	})
 	framework.ExpectNoError(err, "registering mutating webhook config %s with namespace %s", configName, namespace)
 
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
-	return func() { client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Delete(configName, nil) }
+	return func() { client.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(configName, nil) }
 }
 
 func testMutatingConfigMapWebhook(f *framework.Framework) {
@@ -619,36 +789,42 @@ func testMutatingConfigMapWebhook(f *framework.Framework) {
 	}
 }
 
-func registerMutatingWebhookForPod(f *framework.Framework, context *certContext) func() {
+func registerMutatingWebhookForPod(f *framework.Framework, configName string, context *certContext) func() {
 	client := f.ClientSet
 	ginkgo.By("Registering the mutating pod webhook via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := podMutatingWebhookConfigName
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
 
-	_, err := client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Create(&admissionregistrationv1beta1.MutatingWebhookConfiguration{
+	_, err := createMutatingWebhookConfiguration(f, &admissionregistrationv1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.MutatingWebhook{
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
 			{
 				Name: "adding-init-container.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{""},
 						APIVersions: []string{"v1"},
 						Resources:   []string{"pods"},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/mutating-pods"),
 						Port:      pointer.Int32Ptr(servicePort),
 					},
 					CABundle: context.signingCert,
+				},
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
 				},
 			},
 		},
@@ -658,7 +834,7 @@ func registerMutatingWebhookForPod(f *framework.Framework, context *certContext)
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
 
-	return func() { client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Delete(configName, nil) }
+	return func() { client.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(configName, nil) }
 }
 
 func testMutatingPodWebhook(f *framework.Framework) {
@@ -716,9 +892,17 @@ func testWebhook(f *framework.Framework) {
 	pod = hangingPod(f)
 	_, err = client.CoreV1().Pods(f.Namespace.Name).Create(pod)
 	framework.ExpectError(err, "create pod %s in namespace %s should have caused webhook to hang", pod.Name, f.Namespace.Name)
-	expectedTimeoutErr := "request did not complete within"
-	if !strings.Contains(err.Error(), expectedTimeoutErr) {
-		e2elog.Failf("expect timeout error %q, got %q", expectedTimeoutErr, err.Error())
+	// ensure the error is webhook-related, not client-side
+	if !strings.Contains(err.Error(), "webhook") {
+		e2elog.Failf("expect error %q, got %q", "webhook", err.Error())
+	}
+	// ensure the error is a timeout
+	if !strings.Contains(err.Error(), "deadline") {
+		e2elog.Failf("expect error %q, got %q", "deadline", err.Error())
+	}
+	// ensure the pod was not actually created
+	if _, err := client.CoreV1().Pods(f.Namespace.Name).Get(pod.Name, metav1.GetOptions{}); !errors.IsNotFound(err) {
+		e2elog.Failf("expect notfound error looking for rejected pod, got %v", err)
 	}
 
 	ginkgo.By("create a configmap that should be denied by the webhook")
@@ -770,6 +954,7 @@ func testWebhook(f *framework.Framework) {
 		Name: skippedNamespaceName,
 		Labels: map[string]string{
 			skipNamespaceLabelKey: skipNamespaceLabelValue,
+			f.UniqueName:          "true",
 		},
 	}})
 	framework.ExpectNoError(err, "creating namespace %q", skippedNamespaceName)
@@ -833,19 +1018,21 @@ func testAttachingPodWebhook(f *framework.Framework) {
 
 // failingWebhook returns a webhook with rule of create configmaps,
 // but with an invalid client config so that server cannot communicate with it
-func failingWebhook(namespace, name string) admissionregistrationv1beta1.ValidatingWebhook {
-	return admissionregistrationv1beta1.ValidatingWebhook{
+func failingWebhook(namespace, name string) admissionregistrationv1.ValidatingWebhook {
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
+
+	return admissionregistrationv1.ValidatingWebhook{
 		Name: name,
-		Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-			Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-			Rule: admissionregistrationv1beta1.Rule{
+		Rules: []admissionregistrationv1.RuleWithOperations{{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+			Rule: admissionregistrationv1.Rule{
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"configmaps"},
 			},
 		}},
-		ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-			Service: &admissionregistrationv1beta1.ServiceReference{
+		ClientConfig: admissionregistrationv1.WebhookClientConfig{
+			Service: &admissionregistrationv1.ServiceReference{
 				Namespace: namespace,
 				Name:      serviceName,
 				Path:      strPtr("/configmaps"),
@@ -854,20 +1041,21 @@ func failingWebhook(namespace, name string) admissionregistrationv1beta1.Validat
 			// Without CA bundle, the call to webhook always fails
 			CABundle: nil,
 		},
+		SideEffects:             &sideEffectsNone,
+		AdmissionReviewVersions: []string{"v1beta1"},
 	}
 }
 
-func registerFailClosedWebhook(f *framework.Framework, context *certContext) func() {
-	client := f.ClientSet
+func registerFailClosedWebhook(f *framework.Framework, configName string, context *certContext) func() {
 	ginkgo.By("Registering a webhook that server cannot talk to, with fail closed policy, via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := webhookFailClosedConfigName
 	// A webhook that cannot talk to server, with fail-closed policy
-	policyFail := admissionregistrationv1beta1.Fail
+	policyFail := admissionregistrationv1.Fail
 	hook := failingWebhook(namespace, "fail-closed.k8s.io")
 	hook.FailurePolicy = &policyFail
 	hook.NamespaceSelector = &metav1.LabelSelector{
+		MatchLabels: map[string]string{f.UniqueName: "true"},
 		MatchExpressions: []metav1.LabelSelectorRequirement{
 			{
 				Key:      failNamespaceLabelKey,
@@ -877,11 +1065,11 @@ func registerFailClosedWebhook(f *framework.Framework, context *certContext) fun
 		},
 	}
 
-	_, err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+	_, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			// Server cannot talk to this webhook, so it always fails.
 			// Because this webhook is configured fail-closed, request should be rejected after the call fails.
 			hook,
@@ -892,7 +1080,7 @@ func registerFailClosedWebhook(f *framework.Framework, context *certContext) fun
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
 	return func() {
-		f.ClientSet.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(configName, nil)
+		f.ClientSet.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
 	}
 }
 
@@ -903,6 +1091,7 @@ func testFailClosedWebhook(f *framework.Framework) {
 		Name: failNamespaceName,
 		Labels: map[string]string{
 			failNamespaceLabelKey: failNamespaceLabelValue,
+			f.UniqueName:          "true",
 		},
 	}})
 	framework.ExpectNoError(err, "creating namespace %q", failNamespaceName)
@@ -921,28 +1110,28 @@ func testFailClosedWebhook(f *framework.Framework) {
 	}
 }
 
-func registerValidatingWebhookForWebhookConfigurations(f *framework.Framework, context *certContext) func() {
+func registerValidatingWebhookForWebhookConfigurations(f *framework.Framework, configName string, context *certContext) func() {
 	var err error
 	client := f.ClientSet
 	ginkgo.By("Registering a validating webhook on ValidatingWebhookConfiguration and MutatingWebhookConfiguration objects, via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := validatingWebhookForWebhooksConfigName
-	failurePolicy := admissionregistrationv1beta1.Fail
+	failurePolicy := admissionregistrationv1.Fail
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
 
 	// This webhook denies all requests to Delete validating webhook configuration and
 	// mutating webhook configuration objects. It should never be called, however, because
 	// dynamic admission webhooks should not be called on requests involving webhook configuration objects.
-	_, err = client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+	_, err = createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			{
 				Name: "deny-webhook-configuration-deletions.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Delete},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Delete},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{"admissionregistration.k8s.io"},
 						APIVersions: []string{"*"},
 						Resources: []string{
@@ -951,8 +1140,8 @@ func registerValidatingWebhookForWebhookConfigurations(f *framework.Framework, c
 						},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/always-deny"),
@@ -960,7 +1149,13 @@ func registerValidatingWebhookForWebhookConfigurations(f *framework.Framework, c
 					},
 					CABundle: context.signingCert,
 				},
-				FailurePolicy: &failurePolicy,
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				FailurePolicy:           &failurePolicy,
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
+				},
 			},
 		},
 	})
@@ -969,33 +1164,33 @@ func registerValidatingWebhookForWebhookConfigurations(f *framework.Framework, c
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
 	return func() {
-		err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(configName, nil)
+		err := client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
 		framework.ExpectNoError(err, "deleting webhook config %s with namespace %s", configName, namespace)
 	}
 }
 
-func registerMutatingWebhookForWebhookConfigurations(f *framework.Framework, context *certContext) func() {
+func registerMutatingWebhookForWebhookConfigurations(f *framework.Framework, configName string, context *certContext) func() {
 	var err error
 	client := f.ClientSet
 	ginkgo.By("Registering a mutating webhook on ValidatingWebhookConfiguration and MutatingWebhookConfiguration objects, via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := mutatingWebhookForWebhooksConfigName
-	failurePolicy := admissionregistrationv1beta1.Fail
+	failurePolicy := admissionregistrationv1.Fail
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
 
 	// This webhook adds a label to all requests create to validating webhook configuration and
 	// mutating webhook configuration objects. It should never be called, however, because
 	// dynamic admission webhooks should not be called on requests involving webhook configuration objects.
-	_, err = client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Create(&admissionregistrationv1beta1.MutatingWebhookConfiguration{
+	_, err = createMutatingWebhookConfiguration(f, &admissionregistrationv1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.MutatingWebhook{
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
 			{
 				Name: "add-label-to-webhook-configurations.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{"admissionregistration.k8s.io"},
 						APIVersions: []string{"*"},
 						Resources: []string{
@@ -1004,8 +1199,8 @@ func registerMutatingWebhookForWebhookConfigurations(f *framework.Framework, con
 						},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/add-label"),
@@ -1013,7 +1208,13 @@ func registerMutatingWebhookForWebhookConfigurations(f *framework.Framework, con
 					},
 					CABundle: context.signingCert,
 				},
-				FailurePolicy: &failurePolicy,
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				FailurePolicy:           &failurePolicy,
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
+				},
 			},
 		},
 	})
@@ -1022,7 +1223,7 @@ func registerMutatingWebhookForWebhookConfigurations(f *framework.Framework, con
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
 	return func() {
-		err := client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Delete(configName, nil)
+		err := client.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(configName, nil)
 		framework.ExpectNoError(err, "deleting webhook config %s with namespace %s", configName, namespace)
 	}
 }
@@ -1030,32 +1231,33 @@ func registerMutatingWebhookForWebhookConfigurations(f *framework.Framework, con
 // This test assumes that the deletion-rejecting webhook defined in
 // registerValidatingWebhookForWebhookConfigurations and the webhook-config-mutating
 // webhook defined in registerMutatingWebhookForWebhookConfigurations already exist.
-func testWebhooksForWebhookConfigurations(f *framework.Framework) {
+func testWebhooksForWebhookConfigurations(f *framework.Framework, configName string) {
 	var err error
 	client := f.ClientSet
 	ginkgo.By("Creating a dummy validating-webhook-configuration object")
 
 	namespace := f.Namespace.Name
-	failurePolicy := admissionregistrationv1beta1.Ignore
+	failurePolicy := admissionregistrationv1.Ignore
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
 
-	mutatedValidatingWebhookConfiguration, err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+	mutatedValidatingWebhookConfiguration, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: dummyValidatingWebhookConfigName,
+			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			{
 				Name: "dummy-validating-webhook.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
 					// This will not match any real resources so this webhook should never be called.
-					Rule: admissionregistrationv1beta1.Rule{
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{""},
 						APIVersions: []string{"v1"},
 						Resources:   []string{"invalid"},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						// This path not recognized by the webhook service,
@@ -1067,13 +1269,19 @@ func testWebhooksForWebhookConfigurations(f *framework.Framework) {
 					},
 					CABundle: nil,
 				},
-				FailurePolicy: &failurePolicy,
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				FailurePolicy:           &failurePolicy,
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
+				},
 			},
 		},
 	})
-	framework.ExpectNoError(err, "registering webhook config %s with namespace %s", dummyValidatingWebhookConfigName, namespace)
+	framework.ExpectNoError(err, "registering webhook config %s with namespace %s", configName, namespace)
 	if mutatedValidatingWebhookConfiguration.ObjectMeta.Labels != nil && mutatedValidatingWebhookConfiguration.ObjectMeta.Labels[addedLabelKey] == addedLabelValue {
-		e2elog.Failf("expected %s not to be mutated by mutating webhooks but it was", dummyValidatingWebhookConfigName)
+		e2elog.Failf("expected %s not to be mutated by mutating webhooks but it was", configName)
 	}
 
 	// The webhook configuration is honored in 10s.
@@ -1081,29 +1289,29 @@ func testWebhooksForWebhookConfigurations(f *framework.Framework) {
 
 	ginkgo.By("Deleting the validating-webhook-configuration, which should be possible to remove")
 
-	err = client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(dummyValidatingWebhookConfigName, nil)
-	framework.ExpectNoError(err, "deleting webhook config %s with namespace %s", dummyValidatingWebhookConfigName, namespace)
+	err = client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
+	framework.ExpectNoError(err, "deleting webhook config %s with namespace %s", configName, namespace)
 
 	ginkgo.By("Creating a dummy mutating-webhook-configuration object")
 
-	mutatedMutatingWebhookConfiguration, err := client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Create(&admissionregistrationv1beta1.MutatingWebhookConfiguration{
+	mutatedMutatingWebhookConfiguration, err := createMutatingWebhookConfiguration(f, &admissionregistrationv1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: dummyMutatingWebhookConfigName,
+			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.MutatingWebhook{
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
 			{
 				Name: "dummy-mutating-webhook.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
 					// This will not match any real resources so this webhook should never be called.
-					Rule: admissionregistrationv1beta1.Rule{
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{""},
 						APIVersions: []string{"v1"},
 						Resources:   []string{"invalid"},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						// This path not recognized by the webhook service,
@@ -1115,13 +1323,19 @@ func testWebhooksForWebhookConfigurations(f *framework.Framework) {
 					},
 					CABundle: nil,
 				},
-				FailurePolicy: &failurePolicy,
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				FailurePolicy:           &failurePolicy,
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
+				},
 			},
 		},
 	})
-	framework.ExpectNoError(err, "registering webhook config %s with namespace %s", dummyMutatingWebhookConfigName, namespace)
+	framework.ExpectNoError(err, "registering webhook config %s with namespace %s", configName, namespace)
 	if mutatedMutatingWebhookConfiguration.ObjectMeta.Labels != nil && mutatedMutatingWebhookConfiguration.ObjectMeta.Labels[addedLabelKey] == addedLabelValue {
-		e2elog.Failf("expected %s not to be mutated by mutating webhooks but it was", dummyMutatingWebhookConfigName)
+		e2elog.Failf("expected %s not to be mutated by mutating webhooks but it was", configName)
 	}
 
 	// The webhook configuration is honored in 10s.
@@ -1129,8 +1343,8 @@ func testWebhooksForWebhookConfigurations(f *framework.Framework) {
 
 	ginkgo.By("Deleting the mutating-webhook-configuration, which should be possible to remove")
 
-	err = client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Delete(dummyMutatingWebhookConfigName, nil)
-	framework.ExpectNoError(err, "deleting webhook config %s with namespace %s", dummyMutatingWebhookConfigName, namespace)
+	err = client.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(configName, nil)
+	framework.ExpectNoError(err, "deleting webhook config %s with namespace %s", configName, namespace)
 }
 
 func createNamespace(f *framework.Framework, ns *v1.Namespace) error {
@@ -1201,9 +1415,13 @@ func toBeAttachedPod(f *framework.Framework) *v1.Pod {
 }
 
 func nonCompliantConfigMap(f *framework.Framework) *v1.ConfigMap {
+	return namedNonCompliantConfigMap(disallowedConfigMapName, f)
+}
+
+func namedNonCompliantConfigMap(name string, f *framework.Framework) *v1.ConfigMap {
 	return &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: disallowedConfigMapName,
+			Name: name,
 		},
 		Data: map[string]string{
 			"webhook-e2e-test": "webhook-disallow",
@@ -1223,9 +1441,13 @@ func nonDeletableConfigmap(f *framework.Framework) *v1.ConfigMap {
 }
 
 func toBeMutatedConfigMap(f *framework.Framework) *v1.ConfigMap {
+	return namedToBeMutatedConfigMap("to-be-mutated", f)
+}
+
+func namedToBeMutatedConfigMap(name string, f *framework.Framework) *v1.ConfigMap {
 	return &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "to-be-mutated",
+			Name: name,
 		},
 		Data: map[string]string{
 			"mutation-start": "yes",
@@ -1288,35 +1510,42 @@ func cleanWebhookTest(client clientset.Interface, namespaceName string) {
 	_ = client.RbacV1().RoleBindings("kube-system").Delete(roleBindingName, nil)
 }
 
-func registerWebhookForCustomResource(f *framework.Framework, context *certContext, testcrd *crd.TestCrd) func() {
+func registerWebhookForCustomResource(f *framework.Framework, configName string, context *certContext, testcrd *crd.TestCrd) func() {
 	client := f.ClientSet
 	ginkgo.By("Registering the custom resource webhook via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := crWebhookConfigName
-	_, err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
+
+	_, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			{
 				Name: "deny-unwanted-custom-resource-data.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create, admissionregistrationv1beta1.Update, admissionregistrationv1beta1.Delete},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update, admissionregistrationv1.Delete},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{testcrd.Crd.Spec.Group},
 						APIVersions: servedAPIVersions(testcrd.Crd),
 						Resources:   []string{testcrd.Crd.Spec.Names.Plural},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/custom-resource"),
 						Port:      pointer.Int32Ptr(servicePort),
 					},
 					CABundle: context.signingCert,
+				},
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
 				},
 			},
 		},
@@ -1326,33 +1555,34 @@ func registerWebhookForCustomResource(f *framework.Framework, context *certConte
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
 	return func() {
-		client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(configName, nil)
+		client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
 	}
 }
 
-func registerMutatingWebhookForCustomResource(f *framework.Framework, context *certContext, testcrd *crd.TestCrd) func() {
+func registerMutatingWebhookForCustomResource(f *framework.Framework, configName string, context *certContext, testcrd *crd.TestCrd) func() {
 	client := f.ClientSet
 	ginkgo.By(fmt.Sprintf("Registering the mutating webhook for custom resource %s via the AdmissionRegistration API", testcrd.Crd.Name))
 
 	namespace := f.Namespace.Name
-	configName := f.UniqueName
-	_, err := client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Create(&admissionregistrationv1beta1.MutatingWebhookConfiguration{
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
+
+	_, err := createMutatingWebhookConfiguration(f, &admissionregistrationv1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.MutatingWebhook{
+		Webhooks: []admissionregistrationv1.MutatingWebhook{
 			{
 				Name: "mutate-custom-resource-data-stage-1.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create, admissionregistrationv1beta1.Update},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{testcrd.Crd.Spec.Group},
 						APIVersions: servedAPIVersions(testcrd.Crd),
 						Resources:   []string{testcrd.Crd.Spec.Names.Plural},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/mutating-custom-resource"),
@@ -1360,25 +1590,37 @@ func registerMutatingWebhookForCustomResource(f *framework.Framework, context *c
 					},
 					CABundle: context.signingCert,
 				},
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
+				},
 			},
 			{
 				Name: "mutate-custom-resource-data-stage-2.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{testcrd.Crd.Spec.Group},
 						APIVersions: servedAPIVersions(testcrd.Crd),
 						Resources:   []string{testcrd.Crd.Spec.Names.Plural},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/mutating-custom-resource"),
 						Port:      pointer.Int32Ptr(servicePort),
 					},
 					CABundle: context.signingCert,
+				},
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
 				},
 			},
 		},
@@ -1388,7 +1630,7 @@ func registerMutatingWebhookForCustomResource(f *framework.Framework, context *c
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
 
-	return func() { client.AdmissionregistrationV1beta1().MutatingWebhookConfigurations().Delete(configName, nil) }
+	return func() { client.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(configName, nil) }
 }
 
 func testCustomResourceWebhook(f *framework.Framework, crd *apiextensionsv1beta1.CustomResourceDefinition, customResourceClient dynamic.ResourceInterface) {
@@ -1520,40 +1762,46 @@ func testMultiVersionCustomResourceWebhook(f *framework.Framework, testcrd *crd.
 	framework.ExpectNoError(err, "failed to patch custom resource %s in namespace: %s", crName, f.Namespace.Name)
 }
 
-func registerValidatingWebhookForCRD(f *framework.Framework, context *certContext) func() {
+func registerValidatingWebhookForCRD(f *framework.Framework, configName string, context *certContext) func() {
 	client := f.ClientSet
 	ginkgo.By("Registering the crd webhook via the AdmissionRegistration API")
 
 	namespace := f.Namespace.Name
-	configName := crdWebhookConfigName
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
 
 	// This webhook will deny the creation of CustomResourceDefinitions which have the
 	// label "webhook-e2e-test":"webhook-disallow"
 	// NOTE: Because tests are run in parallel and in an unpredictable order, it is critical
 	// that no other test attempts to create CRD with that label.
-	_, err := client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+	_, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			{
 				Name: "deny-crd-with-unwanted-label.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{"apiextensions.k8s.io"},
 						APIVersions: []string{"*"},
 						Resources:   []string{"customresourcedefinitions"},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/crd"),
 						Port:      pointer.Int32Ptr(servicePort),
 					},
 					CABundle: context.signingCert,
+				},
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
+				// Scope the webhook to just this namespace
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{f.UniqueName: "true"},
 				},
 			},
 		},
@@ -1563,7 +1811,7 @@ func registerValidatingWebhookForCRD(f *framework.Framework, context *certContex
 	// The webhook configuration is honored in 10s.
 	time.Sleep(10 * time.Second)
 	return func() {
-		client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(configName, nil)
+		client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
 	}
 }
 
@@ -1620,12 +1868,8 @@ func testCRDDenyWebhook(f *framework.Framework) {
 	}
 }
 
-func registerSlowWebhook(f *framework.Framework, context *certContext, policy *admissionregistrationv1beta1.FailurePolicyType, timeout *int32) func() {
+func labelNamespace(f *framework.Framework, namespace string) {
 	client := f.ClientSet
-	ginkgo.By("Registering slow webhook via the AdmissionRegistration API")
-
-	namespace := f.Namespace.Name
-	configName := slowWebhookConfigName
 
 	// Add a unique label to the namespace
 	ns, err := client.CoreV1().Namespaces().Get(namespace, metav1.GetOptions{})
@@ -1633,27 +1877,35 @@ func registerSlowWebhook(f *framework.Framework, context *certContext, policy *a
 	if ns.Labels == nil {
 		ns.Labels = map[string]string{}
 	}
-	ns.Labels[slowWebhookConfigName] = namespace
+	ns.Labels[f.UniqueName] = "true"
 	_, err = client.CoreV1().Namespaces().Update(ns)
 	framework.ExpectNoError(err, "error labeling namespace %s", namespace)
+}
 
-	_, err = client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Create(&admissionregistrationv1beta1.ValidatingWebhookConfiguration{
+func registerSlowWebhook(f *framework.Framework, configName string, context *certContext, policy *admissionregistrationv1.FailurePolicyType, timeout *int32) func() {
+	client := f.ClientSet
+	ginkgo.By("Registering slow webhook via the AdmissionRegistration API")
+
+	namespace := f.Namespace.Name
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
+
+	_, err := createValidatingWebhookConfiguration(f, &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: configName,
 		},
-		Webhooks: []admissionregistrationv1beta1.ValidatingWebhook{
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{
 			{
 				Name: "allow-configmap-with-delay-webhook.k8s.io",
-				Rules: []admissionregistrationv1beta1.RuleWithOperations{{
-					Operations: []admissionregistrationv1beta1.OperationType{admissionregistrationv1beta1.Create},
-					Rule: admissionregistrationv1beta1.Rule{
+				Rules: []admissionregistrationv1.RuleWithOperations{{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					Rule: admissionregistrationv1.Rule{
 						APIGroups:   []string{""},
 						APIVersions: []string{"v1"},
 						Resources:   []string{"configmaps"},
 					},
 				}},
-				ClientConfig: admissionregistrationv1beta1.WebhookClientConfig{
-					Service: &admissionregistrationv1beta1.ServiceReference{
+				ClientConfig: admissionregistrationv1.WebhookClientConfig{
+					Service: &admissionregistrationv1.ServiceReference{
 						Namespace: namespace,
 						Name:      serviceName,
 						Path:      strPtr("/always-allow-delay-5s"),
@@ -1663,10 +1915,12 @@ func registerSlowWebhook(f *framework.Framework, context *certContext, policy *a
 				},
 				// Scope the webhook to just this namespace
 				NamespaceSelector: &metav1.LabelSelector{
-					MatchLabels: ns.Labels,
+					MatchLabels: map[string]string{f.UniqueName: "true"},
 				},
-				FailurePolicy:  policy,
-				TimeoutSeconds: timeout,
+				FailurePolicy:           policy,
+				TimeoutSeconds:          timeout,
+				SideEffects:             &sideEffectsNone,
+				AdmissionReviewVersions: []string{"v1beta1"},
 			},
 		},
 	})
@@ -1676,7 +1930,7 @@ func registerSlowWebhook(f *framework.Framework, context *certContext, policy *a
 	time.Sleep(10 * time.Second)
 
 	return func() {
-		client.AdmissionregistrationV1beta1().ValidatingWebhookConfigurations().Delete(configName, nil)
+		client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(configName, nil)
 	}
 }
 
@@ -1730,4 +1984,131 @@ func servedAPIVersions(crd *apiextensionsv1beta1.CustomResourceDefinition) []str
 		}
 	}
 	return ret
+}
+
+// createValidatingWebhookConfiguration ensures the webhook config scopes object or namespace selection
+// to avoid interfering with other tests, then creates the config.
+func createValidatingWebhookConfiguration(f *framework.Framework, config *admissionregistrationv1.ValidatingWebhookConfiguration) (*admissionregistrationv1.ValidatingWebhookConfiguration, error) {
+	for _, webhook := range config.Webhooks {
+		if webhook.NamespaceSelector != nil && webhook.NamespaceSelector.MatchLabels[f.UniqueName] == "true" {
+			continue
+		}
+		if webhook.ObjectSelector != nil && webhook.ObjectSelector.MatchLabels[f.UniqueName] == "true" {
+			continue
+		}
+		e2elog.Failf(`webhook %s in config %s has no namespace or object selector with %s="true", and can interfere with other tests`, webhook.Name, config.Name, f.UniqueName)
+	}
+	return f.ClientSet.AdmissionregistrationV1().ValidatingWebhookConfigurations().Create(config)
+}
+
+// createMutatingWebhookConfiguration ensures the webhook config scopes object or namespace selection
+// to avoid interfering with other tests, then creates the config.
+func createMutatingWebhookConfiguration(f *framework.Framework, config *admissionregistrationv1.MutatingWebhookConfiguration) (*admissionregistrationv1.MutatingWebhookConfiguration, error) {
+	for _, webhook := range config.Webhooks {
+		if webhook.NamespaceSelector != nil && webhook.NamespaceSelector.MatchLabels[f.UniqueName] == "true" {
+			continue
+		}
+		if webhook.ObjectSelector != nil && webhook.ObjectSelector.MatchLabels[f.UniqueName] == "true" {
+			continue
+		}
+		e2elog.Failf(`webhook %s in config %s has no namespace or object selector with %s="true", and can interfere with other tests`, webhook.Name, config.Name, f.UniqueName)
+	}
+	return f.ClientSet.AdmissionregistrationV1().MutatingWebhookConfigurations().Create(config)
+}
+
+func newDenyPodWebhookFixture(f *framework.Framework, context *certContext) admissionregistrationv1.ValidatingWebhook {
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
+	return admissionregistrationv1.ValidatingWebhook{
+		Name: "deny-unwanted-pod-container-name-and-label.k8s.io",
+		Rules: []admissionregistrationv1.RuleWithOperations{{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+			Rule: admissionregistrationv1.Rule{
+				APIGroups:   []string{""},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"pods"},
+			},
+		}},
+		ClientConfig: admissionregistrationv1.WebhookClientConfig{
+			Service: &admissionregistrationv1.ServiceReference{
+				Namespace: f.Namespace.Name,
+				Name:      serviceName,
+				Path:      strPtr("/pods"),
+				Port:      pointer.Int32Ptr(servicePort),
+			},
+			CABundle: context.signingCert,
+		},
+		SideEffects:             &sideEffectsNone,
+		AdmissionReviewVersions: []string{"v1beta1"},
+		// Scope the webhook to just this namespace
+		NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{f.UniqueName: "true"},
+		},
+	}
+}
+
+func newDenyConfigMapWebhookFixture(f *framework.Framework, context *certContext) admissionregistrationv1.ValidatingWebhook {
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
+	return admissionregistrationv1.ValidatingWebhook{
+		Name: "deny-unwanted-configmap-data.k8s.io",
+		Rules: []admissionregistrationv1.RuleWithOperations{{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update, admissionregistrationv1.Delete},
+			Rule: admissionregistrationv1.Rule{
+				APIGroups:   []string{""},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"configmaps"},
+			},
+		}},
+		// The webhook skips the namespace that has label "skip-webhook-admission":"yes"
+		NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{f.UniqueName: "true"},
+			MatchExpressions: []metav1.LabelSelectorRequirement{
+				{
+					Key:      skipNamespaceLabelKey,
+					Operator: metav1.LabelSelectorOpNotIn,
+					Values:   []string{skipNamespaceLabelValue},
+				},
+			},
+		},
+		ClientConfig: admissionregistrationv1.WebhookClientConfig{
+			Service: &admissionregistrationv1.ServiceReference{
+				Namespace: f.Namespace.Name,
+				Name:      serviceName,
+				Path:      strPtr("/configmaps"),
+				Port:      pointer.Int32Ptr(servicePort),
+			},
+			CABundle: context.signingCert,
+		},
+		SideEffects:             &sideEffectsNone,
+		AdmissionReviewVersions: []string{"v1beta1"},
+	}
+}
+
+func newMutateConfigMapWebhookFixture(f *framework.Framework, context *certContext, stage int) admissionregistrationv1.MutatingWebhook {
+	sideEffectsNone := admissionregistrationv1.SideEffectClassNone
+	return admissionregistrationv1.MutatingWebhook{
+		Name: fmt.Sprintf("adding-configmap-data-stage-%d.k8s.io", stage),
+		Rules: []admissionregistrationv1.RuleWithOperations{{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+			Rule: admissionregistrationv1.Rule{
+				APIGroups:   []string{""},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"configmaps"},
+			},
+		}},
+		ClientConfig: admissionregistrationv1.WebhookClientConfig{
+			Service: &admissionregistrationv1.ServiceReference{
+				Namespace: f.Namespace.Name,
+				Name:      serviceName,
+				Path:      strPtr("/mutating-configmaps"),
+				Port:      pointer.Int32Ptr(servicePort),
+			},
+			CABundle: context.signingCert,
+		},
+		SideEffects:             &sideEffectsNone,
+		AdmissionReviewVersions: []string{"v1beta1"},
+		// Scope the webhook to just this namespace
+		NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{f.UniqueName: "true"},
+		},
+	}
 }

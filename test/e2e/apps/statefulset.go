@@ -25,7 +25,7 @@ import (
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	klabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,6 +36,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
 	e2esset "k8s.io/kubernetes/test/e2e/framework/statefulset"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 )
@@ -80,7 +81,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			ss = e2esset.NewStatefulSet(ssName, ns, headlessSvcName, 2, statefulPodMounts, podMounts, labels)
 
 			ginkgo.By("Creating service " + headlessSvcName + " in namespace " + ns)
-			headlessService := framework.CreateServiceSpec(headlessSvcName, "", true, labels)
+			headlessService := e2eservice.CreateServiceSpec(headlessSvcName, "", true, labels)
 			_, err := c.CoreV1().Services(ns).Create(headlessService)
 			framework.ExpectNoError(err)
 		})
@@ -311,7 +312,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			oldImage := ss.Spec.Template.Spec.Containers[0].Image
 
 			ginkgo.By(fmt.Sprintf("Updating stateful set template: update image from %s to %s", oldImage, newImage))
-			gomega.Expect(oldImage).NotTo(gomega.Equal(newImage), "Incorrect test setup: should update to a different image")
+			framework.ExpectNotEqual(oldImage, newImage, "Incorrect test setup: should update to a different image")
 			ss, err = e2esset.UpdateStatefulSetWithRetries(c, ns, ss.Name, func(update *appsv1.StatefulSet) {
 				update.Spec.Template.Spec.Containers[0].Image = newImage
 			})
@@ -320,8 +321,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			ginkgo.By("Creating a new revision")
 			ss = e2esset.WaitForStatus(c, ss)
 			currentRevision, updateRevision = ss.Status.CurrentRevision, ss.Status.UpdateRevision
-			gomega.Expect(currentRevision).NotTo(gomega.Equal(updateRevision),
-				"Current revision should not equal update revision during rolling update")
+			framework.ExpectNotEqual(currentRevision, updateRevision, "Current revision should not equal update revision during rolling update")
 
 			ginkgo.By("Not applying an update when the partition is greater than the number of replicas")
 			for i := range pods.Items {
@@ -512,7 +512,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			oldImage := ss.Spec.Template.Spec.Containers[0].Image
 
 			ginkgo.By(fmt.Sprintf("Updating stateful set template: update image from %s to %s", oldImage, newImage))
-			gomega.Expect(oldImage).NotTo(gomega.Equal(newImage), "Incorrect test setup: should update to a different image")
+			framework.ExpectNotEqual(oldImage, newImage, "Incorrect test setup: should update to a different image")
 			ss, err = e2esset.UpdateStatefulSetWithRetries(c, ns, ss.Name, func(update *appsv1.StatefulSet) {
 				update.Spec.Template.Spec.Containers[0].Image = newImage
 			})
@@ -521,8 +521,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			ginkgo.By("Creating a new revision")
 			ss = e2esset.WaitForStatus(c, ss)
 			currentRevision, updateRevision = ss.Status.CurrentRevision, ss.Status.UpdateRevision
-			gomega.Expect(currentRevision).NotTo(gomega.Equal(updateRevision),
-				"Current revision should not equal update revision during rolling update")
+			framework.ExpectNotEqual(currentRevision, updateRevision, "Current revision should not equal update revision during rolling update")
 
 			ginkgo.By("Recreating Pods at the new revision")
 			e2esset.DeleteStatefulPodAtIndex(c, 0, ss)
@@ -572,7 +571,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			e2esset.WaitForRunningAndNotReady(c, *ss.Spec.Replicas, ss)
 			e2esset.WaitForStatusReadyReplicas(c, ss, 0)
 			e2esset.UpdateReplicas(c, ss, 3)
-			e2esset.ConfirmStatefulPodCount(c, 1, ss, 10*time.Second, true)
+			confirmStatefulPodCount(c, 1, ss, 10*time.Second, true)
 
 			ginkgo.By("Scaling up stateful set " + ssName + " to 3 replicas and waiting until all of them will be running in namespace " + ns)
 			e2esset.RestoreHTTPProbe(c, ss)
@@ -605,7 +604,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			e2esset.WaitForStatusReadyReplicas(c, ss, 0)
 			e2esset.WaitForRunningAndNotReady(c, 3, ss)
 			e2esset.UpdateReplicas(c, ss, 0)
-			e2esset.ConfirmStatefulPodCount(c, 3, ss, 10*time.Second, true)
+			confirmStatefulPodCount(c, 3, ss, 10*time.Second, true)
 
 			ginkgo.By("Scaling down stateful set " + ssName + " to 0 replicas and waiting until none of pods will run in namespace" + ns)
 			e2esset.RestoreHTTPProbe(c, ss)
@@ -652,7 +651,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			e2esset.WaitForRunningAndNotReady(c, *ss.Spec.Replicas, ss)
 			e2esset.WaitForStatusReadyReplicas(c, ss, 0)
 			e2esset.UpdateReplicas(c, ss, 3)
-			e2esset.ConfirmStatefulPodCount(c, 3, ss, 10*time.Second, false)
+			confirmStatefulPodCount(c, 3, ss, 10*time.Second, false)
 
 			ginkgo.By("Scaling up stateful set " + ssName + " to 3 replicas and waiting until all of them will be running in namespace " + ns)
 			e2esset.RestoreHTTPProbe(c, ss)
@@ -663,7 +662,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 			e2esset.WaitForStatusReadyReplicas(c, ss, 0)
 			e2esset.WaitForRunningAndNotReady(c, 3, ss)
 			e2esset.UpdateReplicas(c, ss, 0)
-			e2esset.ConfirmStatefulPodCount(c, 0, ss, 10*time.Second, false)
+			confirmStatefulPodCount(c, 0, ss, 10*time.Second, false)
 
 			ginkgo.By("Scaling down stateful set " + ssName + " to 0 replicas and waiting until none of pods will run in namespace" + ns)
 			e2esset.RestoreHTTPProbe(c, ss)
@@ -762,7 +761,14 @@ var _ = SIGDescribe("StatefulSet", func() {
 			}, e2esset.StatefulPodTimeout, 2*time.Second).Should(gomega.BeNil())
 		})
 
-		ginkgo.It("should have a working scale subresource", func() {
+		/*
+			Release : v1.16
+			Testname: StatefulSet resource Replica scaling
+			Description: Create a StatefulSet resource.
+			Newly created StatefulSet resource MUST have a scale of one.
+			Bring the scale of the StatefulSet resource up to two. StatefulSet scale MUST be at two replicas.
+		*/
+		framework.ConformanceIt("should have a working scale subresource", func() {
 			ginkgo.By("Creating statefulset " + ssName + " in namespace " + ns)
 			ss := e2esset.NewStatefulSet(ssName, ns, headlessSvcName, 1, nil, nil, labels)
 			e2esset.SetHTTPProbe(ss)
@@ -1081,7 +1087,7 @@ func rollbackTest(c clientset.Interface, ns string, ss *appsv1.StatefulSet) {
 	oldImage := ss.Spec.Template.Spec.Containers[0].Image
 
 	ginkgo.By(fmt.Sprintf("Updating StatefulSet template: update image from %s to %s", oldImage, newImage))
-	gomega.Expect(oldImage).NotTo(gomega.Equal(newImage), "Incorrect test setup: should update to a different image")
+	framework.ExpectNotEqual(oldImage, newImage, "Incorrect test setup: should update to a different image")
 	ss, err = e2esset.UpdateStatefulSetWithRetries(c, ns, ss.Name, func(update *appsv1.StatefulSet) {
 		update.Spec.Template.Spec.Containers[0].Image = newImage
 	})
@@ -1090,8 +1096,7 @@ func rollbackTest(c clientset.Interface, ns string, ss *appsv1.StatefulSet) {
 	ginkgo.By("Creating a new revision")
 	ss = e2esset.WaitForStatus(c, ss)
 	currentRevision, updateRevision = ss.Status.CurrentRevision, ss.Status.UpdateRevision
-	gomega.Expect(currentRevision).NotTo(gomega.Equal(updateRevision),
-		"Current revision should not equal update revision during rolling update")
+	framework.ExpectNotEqual(currentRevision, updateRevision, "Current revision should not equal update revision during rolling update")
 
 	ginkgo.By("Updating Pods in reverse ordinal order")
 	pods = e2esset.GetPodList(c, ss)
@@ -1130,9 +1135,8 @@ func rollbackTest(c clientset.Interface, ns string, ss *appsv1.StatefulSet) {
 	framework.ExpectNoError(err)
 	ss = e2esset.WaitForStatus(c, ss)
 	currentRevision, updateRevision = ss.Status.CurrentRevision, ss.Status.UpdateRevision
-	gomega.Expect(currentRevision).NotTo(gomega.Equal(updateRevision),
-		"Current revision should not equal update revision during roll back")
 	framework.ExpectEqual(priorRevision, updateRevision, "Prior revision should equal update revision during roll back")
+	framework.ExpectNotEqual(currentRevision, updateRevision, "Current revision should not equal update revision during roll back")
 
 	ginkgo.By("Rolling back update in reverse ordinal order")
 	pods = e2esset.GetPodList(c, ss)
@@ -1157,5 +1161,28 @@ func rollbackTest(c clientset.Interface, ns string, ss *appsv1.StatefulSet) {
 			pods.Items[i].Name,
 			pods.Items[i].Labels[appsv1.StatefulSetRevisionLabel],
 			priorRevision))
+	}
+}
+
+// confirmStatefulPodCount asserts that the current number of Pods in ss is count, waiting up to timeout for ss to
+// to scale to count.
+func confirmStatefulPodCount(c clientset.Interface, count int, ss *appsv1.StatefulSet, timeout time.Duration, hard bool) {
+	start := time.Now()
+	deadline := start.Add(timeout)
+	for t := time.Now(); t.Before(deadline); t = time.Now() {
+		podList := e2esset.GetPodList(c, ss)
+		statefulPodCount := len(podList.Items)
+		if statefulPodCount != count {
+			e2epod.LogPodStates(podList.Items)
+			if hard {
+				e2elog.Failf("StatefulSet %v scaled unexpectedly scaled to %d -> %d replicas", ss.Name, count, len(podList.Items))
+			} else {
+				e2elog.Logf("StatefulSet %v has not reached scale %d, at %d", ss.Name, count, statefulPodCount)
+			}
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		e2elog.Logf("Verifying statefulset %v doesn't scale past %d for another %+v", ss.Name, count, deadline.Sub(t))
+		time.Sleep(1 * time.Second)
 	}
 }

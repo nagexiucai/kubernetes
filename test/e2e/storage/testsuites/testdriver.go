@@ -101,6 +101,23 @@ type DynamicPVTestDriver interface {
 	GetClaimSize() string
 }
 
+// EphemeralTestDriver represents an interface for a TestDriver that supports ephemeral inline volumes.
+type EphemeralTestDriver interface {
+	TestDriver
+
+	// GetVolumeAttributes returns the volume attributes for a
+	// certain inline ephemeral volume, enumerated starting with
+	// #0. Some tests might require more than one volume. They can
+	// all be the same or different, depending what the driver supports
+	// and/or wants to test.
+	GetVolumeAttributes(config *PerTestConfig, volumeNumber int) map[string]string
+
+	// GetCSIDriverName returns the name that was used when registering with
+	// kubelet. Depending on how the driver was deployed, this can be different
+	// from DriverInfo.Name.
+	GetCSIDriverName(config *PerTestConfig) string
+}
+
 // SnapshottableTestDriver represents an interface for a TestDriver that supports DynamicSnapshot
 type SnapshottableTestDriver interface {
 	TestDriver
@@ -114,11 +131,12 @@ type Capability string
 
 // Constants related to capability
 const (
-	CapPersistence Capability = "persistence" // data is persisted across pod restarts
-	CapBlock       Capability = "block"       // raw block mode
-	CapFsGroup     Capability = "fsGroup"     // volume ownership via fsGroup
-	CapExec        Capability = "exec"        // exec a file in the volume
-	CapDataSource  Capability = "dataSource"  // support populate data from snapshot
+	CapPersistence        Capability = "persistence"        // data is persisted across pod restarts
+	CapBlock              Capability = "block"              // raw block mode
+	CapFsGroup            Capability = "fsGroup"            // volume ownership via fsGroup
+	CapExec               Capability = "exec"               // exec a file in the volume
+	CapSnapshotDataSource Capability = "snapshotDataSource" // support populate data from snapshot
+	CapPVCDataSource      Capability = "pvcDataSource"      // support populate data from pvc
 
 	// multiple pods on a node can use the same volume concurrently;
 	// for CSI, see:
@@ -127,7 +145,9 @@ const (
 	// - NodeStageVolume in the spec
 	CapMultiPODs Capability = "multipods"
 
-	CapRWX Capability = "RWX" // support ReadWriteMany access modes
+	CapRWX                 Capability = "RWX"                 // support ReadWriteMany access modes
+	CapControllerExpansion Capability = "controllerExpansion" // support volume expansion for controller
+	CapNodeExpansion       Capability = "nodeExpansion"       // support volume expansion for node
 )
 
 // DriverInfo represents static information about a TestDriver.
@@ -141,11 +161,19 @@ type DriverInfo struct {
 	InTreePluginName string
 	FeatureTag       string // FeatureTag for the driver
 
-	MaxFileSize          int64               // Max file size to be tested for this driver
-	SupportedFsType      sets.String         // Map of string for supported fs type
-	SupportedMountOption sets.String         // Map of string for supported mount option
-	RequiredMountOption  sets.String         // Map of string for required mount option (Optional)
-	Capabilities         map[Capability]bool // Map that represents plugin capabilities
+	// Max file size to be tested for this driver
+	MaxFileSize int64
+	// Map of string for supported fs type
+	SupportedFsType sets.String
+	// Map of string for supported mount option
+	SupportedMountOption sets.String
+	// [Optional] Map of string for required mount option
+	RequiredMountOption sets.String
+	// Map that represents plugin capabilities
+	Capabilities map[Capability]bool
+	// [Optional] List of access modes required for provisioning, defaults to
+	// RWO if unset
+	RequiredAccessModes []v1.PersistentVolumeAccessMode
 }
 
 // PerTestConfig represents parameters that control test execution.

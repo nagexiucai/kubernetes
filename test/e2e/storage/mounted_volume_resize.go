@@ -81,12 +81,15 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 			AllowVolumeExpansion: true,
 			DelayBinding:         true,
 		}
-		resizableSc, err = createStorageClass(test, ns, "resizing", c)
+		resizableSc, err = c.StorageV1().StorageClasses().Create(newStorageClass(test, ns, "resizing"))
 		framework.ExpectNoError(err, "Error creating resizable storage class")
 		gomega.Expect(*resizableSc.AllowVolumeExpansion).To(gomega.BeTrue())
 
-		pvc = newClaim(test, ns, "default")
-		pvc.Spec.StorageClassName = &resizableSc.Name
+		pvc = framework.MakePersistentVolumeClaim(framework.PersistentVolumeClaimConfig{
+			ClaimSize:        test.ClaimSize,
+			StorageClassName: &(resizableSc.Name),
+			VolumeMode:       &test.VolumeMode,
+		}, ns)
 		pvc, err = c.CoreV1().PersistentVolumeClaims(pvc.Namespace).Create(pvc)
 		framework.ExpectNoError(err, "Error creating pvc")
 	})
@@ -128,7 +131,7 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 
 		ginkgo.By("Expanding current pvc")
 		newSize := resource.MustParse("6Gi")
-		pvc, err = expandPVCSize(pvc, newSize, c)
+		pvc, err = testsuites.ExpandPVCSize(pvc, newSize, c)
 		framework.ExpectNoError(err, "While updating pvc for more size")
 		gomega.Expect(pvc).NotTo(gomega.BeNil())
 
@@ -138,7 +141,7 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 		}
 
 		ginkgo.By("Waiting for cloudprovider resize to finish")
-		err = waitForControllerVolumeResize(pvc, c, totalResizeWaitPeriod)
+		err = testsuites.WaitForControllerVolumeResize(pvc, c, totalResizeWaitPeriod)
 		framework.ExpectNoError(err, "While waiting for pvc resize to finish")
 
 		ginkgo.By("Getting a pod from deployment")
@@ -155,7 +158,7 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 		framework.ExpectNoError(err, "While waiting for pod to be recreated")
 
 		ginkgo.By("Waiting for file system resize to finish")
-		pvc, err = waitForFSResize(pvc, c)
+		pvc, err = testsuites.WaitForFSResize(pvc, c)
 		framework.ExpectNoError(err, "while waiting for fs resize to finish")
 
 		pvcConditions := pvc.Status.Conditions

@@ -64,8 +64,8 @@ var _ = utils.SIGDescribe("Volume Operations Storm [Feature:vsphere]", func() {
 		client = f.ClientSet
 		namespace = f.Namespace.Name
 		gomega.Expect(GetReadySchedulableNodeInfos()).NotTo(gomega.BeEmpty())
-		if os.Getenv("VOLUME_OPS_SCALE") != "" {
-			volume_ops_scale, err = strconv.Atoi(os.Getenv("VOLUME_OPS_SCALE"))
+		if scale := os.Getenv("VOLUME_OPS_SCALE"); scale != "" {
+			volume_ops_scale, err = strconv.Atoi(scale)
 			framework.ExpectNoError(err)
 		} else {
 			volume_ops_scale = DEFAULT_VOLUME_OPS_SCALE
@@ -87,7 +87,7 @@ var _ = utils.SIGDescribe("Volume Operations Storm [Feature:vsphere]", func() {
 		ginkgo.By("Creating Storage Class")
 		scParameters := make(map[string]string)
 		scParameters["diskformat"] = "thin"
-		storageclass, err = client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("thinsc", scParameters, nil))
+		storageclass, err = client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("thinsc", scParameters, nil, ""))
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Creating PVCs using the Storage Class")

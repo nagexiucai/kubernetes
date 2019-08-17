@@ -23,7 +23,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -33,7 +33,6 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	e2efwk "k8s.io/kubernetes/test/e2e/framework"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
-	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	"k8s.io/kubernetes/test/e2e/manifest"
 )
 
@@ -62,7 +61,7 @@ func CreateStatefulSet(c clientset.Interface, manifestPath, ns string) *appsv1.S
 }
 
 // GetPodList gets the current Pods in ss.
-func GetPodList(c clientset.Interface, ss *appsv1.StatefulSet) *corev1.PodList {
+func GetPodList(c clientset.Interface, ss *appsv1.StatefulSet) *v1.PodList {
 	selector, err := metav1.LabelSelectorAsSelector(ss.Spec.Selector)
 	e2efwk.ExpectNoError(err)
 	podList, err := c.CoreV1().Pods(ss.Namespace).List(metav1.ListOptions{LabelSelector: selector.String()})
@@ -182,7 +181,7 @@ func Scale(c clientset.Interface, ss *appsv1.StatefulSet, count int32) (*appsv1.
 	e2elog.Logf("Scaling statefulset %s to %d", name, count)
 	ss = update(c, ns, name, func(ss *appsv1.StatefulSet) { *(ss.Spec.Replicas) = count })
 
-	var statefulPodList *corev1.PodList
+	var statefulPodList *v1.PodList
 	pollErr := wait.PollImmediate(StatefulSetPoll, StatefulSetTimeout, func() (bool, error) {
 		statefulPodList = GetPodList(c, ss)
 		if int32(len(statefulPodList.Items)) == count {
@@ -194,7 +193,7 @@ func Scale(c clientset.Interface, ss *appsv1.StatefulSet, count int32) (*appsv1.
 		unhealthy := []string{}
 		for _, statefulPod := range statefulPodList.Items {
 			delTs, phase, readiness := statefulPod.DeletionTimestamp, statefulPod.Status.Phase, podutil.IsPodReady(&statefulPod)
-			if delTs != nil || phase != corev1.PodRunning || !readiness {
+			if delTs != nil || phase != v1.PodRunning || !readiness {
 				unhealthy = append(unhealthy, fmt.Sprintf("%v: deletion %v, phase %v, readiness %v", statefulPod.Name, delTs, phase, readiness))
 			}
 		}
@@ -218,29 +217,6 @@ func Restart(c clientset.Interface, ss *appsv1.StatefulSet) {
 	// before we scale it back up.
 	WaitForStatusReplicas(c, ss, 0)
 	update(c, ss.Namespace, ss.Name, func(ss *appsv1.StatefulSet) { *(ss.Spec.Replicas) = oldReplicas })
-}
-
-// ConfirmStatefulPodCount asserts that the current number of Pods in ss is count, waiting up to timeout for ss to
-// to scale to count.
-func ConfirmStatefulPodCount(c clientset.Interface, count int, ss *appsv1.StatefulSet, timeout time.Duration, hard bool) {
-	start := time.Now()
-	deadline := start.Add(timeout)
-	for t := time.Now(); t.Before(deadline); t = time.Now() {
-		podList := GetPodList(c, ss)
-		statefulPodCount := len(podList.Items)
-		if statefulPodCount != count {
-			e2epod.LogPodStates(podList.Items)
-			if hard {
-				e2elog.Failf("StatefulSet %v scaled unexpectedly scaled to %d -> %d replicas", ss.Name, count, len(podList.Items))
-			} else {
-				e2elog.Logf("StatefulSet %v has not reached scale %d, at %d", ss.Name, count, statefulPodCount)
-			}
-			time.Sleep(1 * time.Second)
-			continue
-		}
-		e2elog.Logf("Verifying statefulset %v doesn't scale past %d for another %+v", ss.Name, count, deadline.Sub(t))
-		time.Sleep(1 * time.Second)
-	}
 }
 
 // GetStatefulSet gets the StatefulSet named name in namespace.
@@ -313,7 +289,7 @@ func ExecInStatefulPods(c clientset.Interface, ss *appsv1.StatefulSet, cmd strin
 type updateStatefulSetFunc func(*appsv1.StatefulSet)
 
 // VerifyStatefulPodFunc is a func that examines a StatefulSetPod.
-type VerifyStatefulPodFunc func(*corev1.Pod)
+type VerifyStatefulPodFunc func(*v1.Pod)
 
 // VerifyPodAtIndex applies a visitor pattern to the Pod at index in ss. verify is applied to the Pod to "visit" it.
 func VerifyPodAtIndex(c clientset.Interface, index int, ss *appsv1.StatefulSet, verify VerifyStatefulPodFunc) {

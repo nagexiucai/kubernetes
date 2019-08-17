@@ -27,6 +27,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
@@ -34,7 +35,6 @@ import (
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 	// ensure libs have a chance to initialize
 	_ "github.com/stretchr/testify/assert"
 )
@@ -49,6 +49,7 @@ var _ = framework.KubeDescribe("EquivalenceCache [Serial]", func() {
 	var masterNodes sets.String
 	var systemPodsNo int
 	var ns string
+	var err error
 	f := framework.NewDefaultFramework("equivalence-cache")
 
 	ginkgo.BeforeEach(func() {
@@ -56,7 +57,12 @@ var _ = framework.KubeDescribe("EquivalenceCache [Serial]", func() {
 		ns = f.Namespace.Name
 
 		e2enode.WaitForTotalHealthy(cs, time.Minute)
-		masterNodes, nodeList = framework.GetMasterAndWorkerNodesOrDie(cs)
+		masterNodes, nodeList, err = e2enode.GetMasterAndWorkerNodes(cs)
+		if err != nil {
+			e2elog.Logf("Unexpected error occurred: %v", err)
+		}
+		// TODO: write a wrapper for ExpectNoErrorWithOffset()
+		framework.ExpectNoErrorWithOffset(0, err)
 
 		framework.ExpectNoError(framework.CheckTestingNSDeletedExcept(cs, ns))
 
@@ -77,7 +83,7 @@ var _ = framework.KubeDescribe("EquivalenceCache [Serial]", func() {
 
 		for _, node := range nodeList.Items {
 			e2elog.Logf("\nLogging pods the kubelet thinks is on node %v before test", node.Name)
-			framework.PrintAllKubeletPods(cs, node.Name)
+			e2ekubelet.PrintAllKubeletPods(cs, node.Name)
 		}
 
 	})
@@ -183,7 +189,7 @@ var _ = framework.KubeDescribe("EquivalenceCache [Serial]", func() {
 		framework.ExpectNoError(err)
 		framework.ExpectEqual(len(podList.Items), 2)
 		nodeNames := []string{podList.Items[0].Spec.NodeName, podList.Items[1].Spec.NodeName}
-		gomega.Expect(nodeNames[0]).ToNot(gomega.Equal(nodeNames[1]))
+		framework.ExpectNotEqual(nodeNames[0], nodeNames[1])
 
 		ginkgo.By("Applying a random label to both nodes.")
 		k := "e2e.inter-pod-affinity.kubernetes.io/zone"

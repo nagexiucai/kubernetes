@@ -30,6 +30,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
+	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
 )
 
@@ -110,7 +111,12 @@ var _ = utils.SIGDescribe("Storage Policy Based Volume Provisioning [Feature:vsp
 		if !(len(nodeList.Items) > 0) {
 			e2elog.Failf("Unable to find ready and schedulable Node")
 		}
-		masternodes, _ := framework.GetMasterAndWorkerNodesOrDie(client)
+		masternodes, _, err := e2enode.GetMasterAndWorkerNodes(client)
+		if err != nil {
+			e2elog.Logf("Unexpected error occurred: %v", err)
+		}
+		// TODO: write a wrapper for ExpectNoErrorWithOffset()
+		framework.ExpectNoErrorWithOffset(0, err)
 		gomega.Expect(masternodes).NotTo(gomega.BeEmpty())
 		masterNode = masternodes.List()[0]
 	})
@@ -274,7 +280,7 @@ var _ = utils.SIGDescribe("Storage Policy Based Volume Provisioning [Feature:vsp
 
 func invokeValidPolicyTest(f *framework.Framework, client clientset.Interface, namespace string, scParameters map[string]string) {
 	ginkgo.By("Creating Storage Class With storage policy params")
-	storageclass, err := client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("storagepolicysc", scParameters, nil))
+	storageclass, err := client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("storagepolicysc", scParameters, nil, ""))
 	framework.ExpectNoError(err, fmt.Sprintf("Failed to create storage class with err: %v", err))
 	defer client.StorageV1().StorageClasses().Delete(storageclass.Name, nil)
 
@@ -306,7 +312,7 @@ func invokeValidPolicyTest(f *framework.Framework, client clientset.Interface, n
 
 func invokeInvalidPolicyTestNeg(client clientset.Interface, namespace string, scParameters map[string]string) error {
 	ginkgo.By("Creating Storage Class With storage policy params")
-	storageclass, err := client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("storagepolicysc", scParameters, nil))
+	storageclass, err := client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("storagepolicysc", scParameters, nil, ""))
 	framework.ExpectNoError(err, fmt.Sprintf("Failed to create storage class with err: %v", err))
 	defer client.StorageV1().StorageClasses().Delete(storageclass.Name, nil)
 
@@ -325,7 +331,7 @@ func invokeInvalidPolicyTestNeg(client clientset.Interface, namespace string, sc
 
 func invokeStaleDummyVMTestWithStoragePolicy(client clientset.Interface, masterNode string, namespace string, clusterName string, scParameters map[string]string) {
 	ginkgo.By("Creating Storage Class With storage policy params")
-	storageclass, err := client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("storagepolicysc", scParameters, nil))
+	storageclass, err := client.StorageV1().StorageClasses().Create(getVSphereStorageClassSpec("storagepolicysc", scParameters, nil, ""))
 	framework.ExpectNoError(err, fmt.Sprintf("Failed to create storage class with err: %v", err))
 	defer client.StorageV1().StorageClasses().Delete(storageclass.Name, nil)
 

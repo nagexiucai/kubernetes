@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 
 	"github.com/onsi/ginkgo"
@@ -132,7 +133,7 @@ var _ = SIGDescribe("Pods Extended", func() {
 			ginkgo.By("deleting the pod gracefully")
 			rsp, err := client.Do(req)
 			framework.ExpectNoError(err, "failed to use http client to send delete")
-			gomega.Expect(rsp.StatusCode).Should(gomega.Equal(http.StatusOK), "failed to delete gracefully by client request")
+			framework.ExpectEqual(rsp.StatusCode, http.StatusOK, "failed to delete gracefully by client request")
 			var lastPod v1.Pod
 			err = json.NewDecoder(rsp.Body).Decode(&lastPod)
 			framework.ExpectNoError(err, "failed to decode graceful termination proxy response")
@@ -142,7 +143,7 @@ var _ = SIGDescribe("Pods Extended", func() {
 			ginkgo.By("verifying the kubelet observed the termination notice")
 
 			err = wait.Poll(time.Second*5, time.Second*30, func() (bool, error) {
-				podList, err := framework.GetKubeletPods(f.ClientSet, pod.Spec.NodeName)
+				podList, err := e2ekubelet.GetKubeletPods(f.ClientSet, pod.Spec.NodeName)
 				if err != nil {
 					e2elog.Logf("Unable to retrieve kubelet pods for node %v: %v", pod.Spec.NodeName, err)
 					return false, nil

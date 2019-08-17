@@ -68,7 +68,7 @@ func TestEventSeriesf(t *testing.T) {
 
 	testPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			SelfLink:  "/api/version/pods/foo",
+			SelfLink:  "/api/v1/namespaces/baz/pods/foo",
 			Name:      "foo",
 			Namespace: "baz",
 			UID:       "bar",
@@ -168,17 +168,17 @@ func TestEventSeriesf(t *testing.T) {
 		if item.expectUpdate {
 			actualEvent := <-patchEvent
 			t.Logf("%v - validating event affected by patch request", index)
-			validateEventSerie(strconv.Itoa(index), true, actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), true, actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent
 			t.Logf("%v - validating event affected by a create request", index)
-			validateEventSerie(strconv.Itoa(index), false, actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), false, actualEvent, item.expect, t)
 		}
 	}
 	close(stopCh)
 }
 
-func validateEventSerie(messagePrefix string, expectedUpdate bool, actualEvent *v1beta1.Event, expectedEvent *v1beta1.Event, t *testing.T) {
+func validateEvent(messagePrefix string, expectedUpdate bool, actualEvent *v1beta1.Event, expectedEvent *v1beta1.Event, t *testing.T) {
 	recvEvent := *actualEvent
 
 	// Just check that the timestamp was set.
@@ -212,7 +212,7 @@ func TestFinishSeries(t *testing.T) {
 	hostname, _ := os.Hostname()
 	testPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			SelfLink:  "/api/version/pods/foo",
+			SelfLink:  "/api/v1/namespaces/baz/pods/foo",
 			Name:      "foo",
 			Namespace: "baz",
 			UID:       "bar",
@@ -284,7 +284,7 @@ func TestRefreshExistingEventSeries(t *testing.T) {
 	hostname, _ := os.Hostname()
 	testPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			SelfLink:  "/api/version/pods/foo",
+			SelfLink:  "/api/v1/namespaces/baz/pods/foo",
 			Name:      "foo",
 			Namespace: "baz",
 			UID:       "bar",

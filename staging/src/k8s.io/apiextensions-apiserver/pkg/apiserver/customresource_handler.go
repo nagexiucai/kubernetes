@@ -95,6 +95,7 @@ type crdHandler struct {
 	customStorage atomic.Value
 
 	crdLister listers.CustomResourceDefinitionLister
+	hasSynced func() bool
 
 	delegate          http.Handler
 	restOptionsGetter generic.RESTOptionsGetter
@@ -165,6 +166,7 @@ func NewCustomResourceDefinitionHandler(
 		groupDiscoveryHandler:   groupDiscoveryHandler,
 		customStorage:           atomic.Value{},
 		crdLister:               crdInformer.Lister(),
+		hasSynced:               crdInformer.Informer().HasSynced,
 		delegate:                delegate,
 		restOptionsGetter:       restOptionsGetter,
 		admission:               admission,
@@ -197,11 +199,18 @@ func NewCustomResourceDefinitionHandler(
 // and on the client side (by restarting the watch)
 var longRunningFilter = genericfilters.BasicLongRunningRequestCheck(sets.NewString("watch"), sets.NewString())
 
+// possiblyAcrossAllNamespacesVerbs contains those verbs which can be per-namespace and across all
+// namespaces for namespaces resources. I.e. for these an empty namespace in the requestInfo is fine.
+var possiblyAcrossAllNamespacesVerbs = sets.NewString("list", "watch")
+
 func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 	requestInfo, ok := apirequest.RequestInfoFrom(ctx)
 	if !ok {
-		responsewriters.InternalError(w, req, fmt.Errorf("no RequestInfo found in the context"))
+		responsewriters.ErrorNegotiated(
+			apierrors.NewInternalError(fmt.Errorf("no RequestInfo found in the context")),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 		return
 	}
 	if !requestInfo.IsResourceRequest {
@@ -209,11 +218,19 @@ func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// only match /apis/<group>/<version>
 		// only registered under /apis
 		if len(pathParts) == 3 {
+			if !r.hasSynced() {
+				responsewriters.ErrorNegotiated(serverStartingError(), Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req)
+				return
+			}
 			r.versionDiscoveryHandler.ServeHTTP(w, req)
 			return
 		}
 		// only match /apis/<group>
 		if len(pathParts) == 2 {
+			if !r.hasSynced() {
+				responsewriters.ErrorNegotiated(serverStartingError(), Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req)
+				return
+			}
 			r.groupDiscoveryHandler.ServeHTTP(w, req)
 			return
 		}
@@ -225,17 +242,40 @@ func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	crdName := requestInfo.Resource + "." + requestInfo.APIGroup
 	crd, err := r.crdLister.Get(crdName)
 	if apierrors.IsNotFound(err) {
+		if !r.hasSynced() {
+			responsewriters.ErrorNegotiated(serverStartingError(), Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req)
+			return
+		}
+
 		r.delegate.ServeHTTP(w, req)
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utilruntime.HandleError(err)
+		responsewriters.ErrorNegotiated(
+			apierrors.NewInternalError(fmt.Errorf("error resolving resource")),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 		return
 	}
+
+	// if the scope in the CRD and the scope in request differ (with exception of the verbs in possiblyAcrossAllNamespacesVerbs
+	// for namespaced resources), pass request to the delegate, which is supposed to lead to a 404.
+	namespacedCRD, namespacedReq := crd.Spec.Scope == apiextensions.NamespaceScoped, len(requestInfo.Namespace) > 0
+	if !namespacedCRD && namespacedReq {
+		r.delegate.ServeHTTP(w, req)
+		return
+	}
+	if namespacedCRD && !namespacedReq && !possiblyAcrossAllNamespacesVerbs.Has(requestInfo.Verb) {
+		r.delegate.ServeHTTP(w, req)
+		return
+	}
+
 	if !apiextensions.HasServedCRDVersion(crd, requestInfo.APIVersion) {
 		r.delegate.ServeHTTP(w, req)
 		return
 	}
+
 	// There is a small chance that a CRD is being served because NamesAccepted condition is true,
 	// but it becomes "unserved" because another names update leads to a conflict
 	// and EstablishingController wasn't fast enough to put the CRD into the Established condition.
@@ -254,7 +294,11 @@ func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utilruntime.HandleError(err)
+		responsewriters.ErrorNegotiated(
+			apierrors.NewInternalError(fmt.Errorf("error resolving resource")),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 		return
 	}
 	if !hasServedCRDVersion(crdInfo.spec, requestInfo.APIVersion) {
@@ -278,7 +322,10 @@ func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	subresources, err := apiextensions.GetSubresourcesForVersion(crd, requestInfo.APIVersion)
 	if err != nil {
 		utilruntime.HandleError(err)
-		http.Error(w, "the server could not properly serve the CR subresources", http.StatusInternalServerError)
+		responsewriters.ErrorNegotiated(
+			apierrors.NewInternalError(fmt.Errorf("could not properly serve the subresource")),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 		return
 	}
 	switch {
@@ -289,7 +336,10 @@ func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case len(subresource) == 0:
 		handlerFunc = r.serveResource(w, req, requestInfo, crdInfo, terminating, supportedTypes)
 	default:
-		http.Error(w, "the server could not find the requested resource", http.StatusNotFound)
+		responsewriters.ErrorNegotiated(
+			apierrors.NewNotFound(schema.GroupResource{Group: requestInfo.APIGroup, Resource: requestInfo.Resource}, requestInfo.Name),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 	}
 
 	if handlerFunc != nil {
@@ -315,7 +365,9 @@ func (r *crdHandler) serveResource(w http.ResponseWriter, req *http.Request, req
 		return handlers.ListResource(storage, storage, requestScope, forceWatch, r.minRequestTimeout)
 	case "create":
 		if terminating {
-			http.Error(w, fmt.Sprintf("%v not allowed while CustomResourceDefinition is terminating", requestInfo.Verb), http.StatusMethodNotAllowed)
+			err := apierrors.NewMethodNotSupported(schema.GroupResource{Group: requestInfo.APIGroup, Resource: requestInfo.Resource}, requestInfo.Verb)
+			err.ErrStatus.Message = fmt.Sprintf("%v not allowed while custom resource definition is terminating", requestInfo.Verb)
+			responsewriters.ErrorNegotiated(err, Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req)
 			return nil
 		}
 		return handlers.CreateResource(storage, requestScope, r.admission)
@@ -330,7 +382,10 @@ func (r *crdHandler) serveResource(w http.ResponseWriter, req *http.Request, req
 		checkBody := true
 		return handlers.DeleteCollection(storage, checkBody, requestScope, r.admission)
 	default:
-		http.Error(w, fmt.Sprintf("unhandled verb %q", requestInfo.Verb), http.StatusMethodNotAllowed)
+		responsewriters.ErrorNegotiated(
+			apierrors.NewMethodNotSupported(schema.GroupResource{Group: requestInfo.APIGroup, Resource: requestInfo.Resource}, requestInfo.Verb),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 		return nil
 	}
 }
@@ -347,7 +402,10 @@ func (r *crdHandler) serveStatus(w http.ResponseWriter, req *http.Request, reque
 	case "patch":
 		return handlers.PatchResource(storage, requestScope, r.admission, supportedTypes)
 	default:
-		http.Error(w, fmt.Sprintf("unhandled verb %q", requestInfo.Verb), http.StatusMethodNotAllowed)
+		responsewriters.ErrorNegotiated(
+			apierrors.NewMethodNotSupported(schema.GroupResource{Group: requestInfo.APIGroup, Resource: requestInfo.Resource}, requestInfo.Verb),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 		return nil
 	}
 }
@@ -364,7 +422,10 @@ func (r *crdHandler) serveScale(w http.ResponseWriter, req *http.Request, reques
 	case "patch":
 		return handlers.PatchResource(storage, requestScope, r.admission, supportedTypes)
 	default:
-		http.Error(w, fmt.Sprintf("unhandled verb %q", requestInfo.Verb), http.StatusMethodNotAllowed)
+		responsewriters.ErrorNegotiated(
+			apierrors.NewMethodNotSupported(schema.GroupResource{Group: requestInfo.APIGroup, Resource: requestInfo.Resource}, requestInfo.Verb),
+			Codecs, schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}, w, req,
+		)
 		return nil
 	}
 }
@@ -753,13 +814,6 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 		// shallow copy
 		statusScope := *requestScopes[v.Name]
 		statusScope.Subresource = "status"
-		statusScope.Serializer = unstructuredNegotiatedSerializer{
-			typer: typer, creator: creator,
-			converter:             safeConverter,
-			structuralSchemas:     structuralSchemas,
-			structuralSchemaGK:    kind.GroupKind(),
-			preserveUnknownFields: *crd.Spec.PreserveUnknownFields,
-		}
 		statusScope.Namer = handlers.ContextBasedNaming{
 			SelfLinker:         meta.NewAccessor(),
 			ClusterScoped:      clusterScoped,
@@ -1113,4 +1167,16 @@ func hasServedCRDVersion(spec *apiextensions.CustomResourceDefinitionSpec, versi
 		}
 	}
 	return false
+}
+
+// serverStartingError returns a ServiceUnavailble error with a retry-after time
+func serverStartingError() error {
+	err := apierrors.NewServiceUnavailable("server is starting")
+	if err.ErrStatus.Details == nil {
+		err.ErrStatus.Details = &metav1.StatusDetails{}
+	}
+	if err.ErrStatus.Details.RetryAfterSeconds == 0 {
+		err.ErrStatus.Details.RetryAfterSeconds = int32(10)
+	}
+	return err
 }

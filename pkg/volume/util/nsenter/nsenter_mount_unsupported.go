@@ -122,9 +122,9 @@ func (*hostUtil) MakeFile(pathname string) error {
 	return nil
 }
 
-// ExistsPath checks if pathname exists. Always returns an error on unsupported
+// PathExists checks if pathname exists. Always returns an error on unsupported
 // platforms
-func (*hostUtil) ExistsPath(pathname string) (bool, error) {
+func (*hostUtil) PathExists(pathname string) (bool, error) {
 	return true, errors.New("not implemented")
 }
 
@@ -134,9 +134,9 @@ func (*hostUtil) EvalHostSymlinks(pathname string) (string, error) {
 	return "", errors.New("not implemented")
 }
 
-// GetFSGroup returns FSGroup of pathname. Always returns an error on unsupported platforms
-func (*hostUtil) GetFSGroup(pathname string) (int64, error) {
-	return -1, errors.New("not implemented")
+// GetOwner returns the integer ID for the user and group of the given path
+func (*hostUtil) GetOwner(pathname string) (int64, int64, error) {
+	return -1, -1, errors.New("not implemented")
 }
 
 // GetSELinuxSupport tests if pathname is on a mount that supports SELinux.

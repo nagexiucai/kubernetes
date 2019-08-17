@@ -316,9 +316,9 @@ func (hu *hostUtil) MakeFile(pathname string) error {
 	return nil
 }
 
-// ExistsPath checks if pathname exists.
+// PathExists checks if pathname exists.
 // Error is returned on any other error than "file not found".
-func (hu *hostUtil) ExistsPath(pathname string) (bool, error) {
+func (hu *hostUtil) PathExists(pathname string) (bool, error) {
 	// Resolve the symlinks but allow the target not to exist. EvalSymlinks
 	// would return an generic error when the target does not exist.
 	hostPath, err := hu.ne.EvalSymlinks(pathname, false /* mustExist */)
@@ -334,14 +334,14 @@ func (hu *hostUtil) EvalHostSymlinks(pathname string) (string, error) {
 	return hu.ne.EvalSymlinks(pathname, true)
 }
 
-// GetFSGroup returns FSGroup of pathname.
-func (hu *hostUtil) GetFSGroup(pathname string) (int64, error) {
+// GetOwner returns the integer ID for the user and group of the given path
+func (hu *hostUtil) GetOwner(pathname string) (int64, int64, error) {
 	hostPath, err := hu.ne.EvalSymlinks(pathname, true /* mustExist */)
 	if err != nil {
-		return -1, err
+		return -1, -1, err
 	}
 	kubeletpath := hu.ne.KubeletPath(hostPath)
-	return mount.GetFSGroupLinux(kubeletpath)
+	return mount.GetOwnerLinux(kubeletpath)
 }
 
 // GetSELinuxSupport tests if pathname is on a mount that supports SELinux.

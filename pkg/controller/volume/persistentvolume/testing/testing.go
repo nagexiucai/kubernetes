@@ -223,7 +223,7 @@ func (r *VolumeReactor) React(action core.Action) (handled bool, ret runtime.Obj
 			return true, volume.DeepCopy(), nil
 		}
 		klog.V(4).Infof("GetVolume: volume %s not found", name)
-		return true, nil, fmt.Errorf("Cannot find volume %s", name)
+		return true, nil, apierrs.NewNotFound(action.GetResource().GroupResource(), name)
 
 	case action.Matches("get", "persistentvolumeclaims"):
 		name := action.(core.GetAction).GetName()
@@ -557,8 +557,8 @@ func (r *VolumeReactor) AddClaimBoundToVolume(claim *v1.PersistentVolumeClaim) {
 	}
 }
 
-// MarkVolumeAvaiable marks a PV available by name.
-func (r *VolumeReactor) MarkVolumeAvaiable(name string) {
+// MarkVolumeAvailable marks a PV available by name.
+func (r *VolumeReactor) MarkVolumeAvailable(name string) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	if volume, ok := r.volumes[name]; ok {

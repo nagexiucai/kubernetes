@@ -32,7 +32,7 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -195,7 +195,7 @@ func makeMounts(pod *v1.Pod, podDir string, container *v1.Container, hostName, h
 			volumePath := hostPath
 			hostPath = filepath.Join(volumePath, subPath)
 
-			if subPathExists, err := hu.ExistsPath(hostPath); err != nil {
+			if subPathExists, err := hu.PathExists(hostPath); err != nil {
 				klog.Errorf("Could not determine if subPath %s exists; will not attempt to change its permissions", hostPath)
 			} else if !subPathExists {
 				// Create the sub path now because if it's auto-created later when referenced, it may have an
@@ -1013,14 +1013,14 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	// These two conditions could be alleviated by checkpointing kubelet.
 	activePods := kl.filterOutTerminatedPods(allPods)
 
-	desiredPods := make(map[types.UID]empty)
+	desiredPods := make(map[types.UID]sets.Empty)
 	for _, pod := range activePods {
-		desiredPods[pod.UID] = empty{}
+		desiredPods[pod.UID] = sets.Empty{}
 	}
 	// Stop the workers for no-longer existing pods.
 	// TODO: is here the best place to forget pod workers?
 	kl.podWorkers.ForgetNonExistingPodWorkers(desiredPods)
-	kl.probeManager.CleanupPods(activePods)
+	kl.probeManager.CleanupPods(desiredPods)
 
 	runningPods, err := kl.runtimeCache.GetPods()
 	if err != nil {

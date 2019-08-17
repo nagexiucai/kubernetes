@@ -101,6 +101,7 @@ func InitNFSDriver() testsuites.TestDriver {
 				testsuites.CapPersistence: true,
 				testsuites.CapExec:        true,
 				testsuites.CapRWX:         true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -241,6 +242,7 @@ func InitGlusterFSDriver() testsuites.TestDriver {
 				testsuites.CapPersistence: true,
 				testsuites.CapExec:        true,
 				testsuites.CapRWX:         true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -365,6 +367,7 @@ func InitISCSIDriver() testsuites.TestDriver {
 				testsuites.CapFsGroup:     true,
 				testsuites.CapBlock:       true,
 				testsuites.CapExec:        true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -478,6 +481,7 @@ func InitRbdDriver() testsuites.TestDriver {
 				testsuites.CapFsGroup:     true,
 				testsuites.CapBlock:       true,
 				testsuites.CapExec:        true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -601,6 +605,7 @@ func InitCephFSDriver() testsuites.TestDriver {
 				testsuites.CapPersistence: true,
 				testsuites.CapExec:        true,
 				testsuites.CapRWX:         true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -698,6 +703,7 @@ func InitHostPathDriver() testsuites.TestDriver {
 			),
 			Capabilities: map[testsuites.Capability]bool{
 				testsuites.CapPersistence: true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -771,6 +777,7 @@ func InitHostPathSymlinkDriver() testsuites.TestDriver {
 			),
 			Capabilities: map[testsuites.Capability]bool{
 				testsuites.CapPersistence: true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -1080,7 +1087,7 @@ func (c *cinderDriver) CreateVolume(config *testsuites.PerTestConfig, volType te
 		break
 	}
 	e2elog.Logf("Volume ID: %s", volumeID)
-	gomega.Expect(volumeID).NotTo(gomega.Equal(""))
+	framework.ExpectNotEqual(volumeID, "")
 	return &cinderVolume{
 		volumeName: volumeName,
 		volumeID:   volumeID,
@@ -1145,10 +1152,13 @@ func InitGcePdDriver() testsuites.TestDriver {
 			SupportedFsType:      supportedTypes,
 			SupportedMountOption: sets.NewString("debug", "nouid32"),
 			Capabilities: map[testsuites.Capability]bool{
-				testsuites.CapPersistence: true,
-				testsuites.CapFsGroup:     true,
-				testsuites.CapBlock:       true,
-				testsuites.CapExec:        true,
+				testsuites.CapPersistence:         true,
+				testsuites.CapFsGroup:             true,
+				testsuites.CapBlock:               true,
+				testsuites.CapExec:                true,
+				testsuites.CapMultiPODs:           true,
+				testsuites.CapControllerExpansion: true,
+				testsuites.CapNodeExpansion:       true,
 			},
 		},
 	}
@@ -1278,6 +1288,7 @@ func InitVSphereDriver() testsuites.TestDriver {
 				testsuites.CapPersistence: true,
 				testsuites.CapFsGroup:     true,
 				testsuites.CapExec:        true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -1401,6 +1412,7 @@ func InitAzureDriver() testsuites.TestDriver {
 				testsuites.CapFsGroup:     true,
 				testsuites.CapBlock:       true,
 				testsuites.CapExec:        true,
+				testsuites.CapMultiPODs:   true,
 			},
 		},
 	}
@@ -1514,13 +1526,17 @@ func InitAwsDriver() testsuites.TestDriver {
 			SupportedFsType: sets.NewString(
 				"", // Default fsType
 				"ext3",
+				"ntfs",
 			),
 			SupportedMountOption: sets.NewString("debug", "nouid32"),
 			Capabilities: map[testsuites.Capability]bool{
-				testsuites.CapPersistence: true,
-				testsuites.CapFsGroup:     true,
-				testsuites.CapBlock:       true,
-				testsuites.CapExec:        true,
+				testsuites.CapPersistence:         true,
+				testsuites.CapFsGroup:             true,
+				testsuites.CapBlock:               true,
+				testsuites.CapExec:                true,
+				testsuites.CapMultiPODs:           true,
+				testsuites.CapControllerExpansion: true,
+				testsuites.CapNodeExpansion:       true,
 			},
 		},
 	}
@@ -1580,11 +1596,17 @@ func (a *awsDriver) GetClaimSize() string {
 }
 
 func (a *awsDriver) PrepareTest(f *framework.Framework) (*testsuites.PerTestConfig, func()) {
-	return &testsuites.PerTestConfig{
+	config := &testsuites.PerTestConfig{
 		Driver:    a,
 		Prefix:    "aws",
 		Framework: f,
-	}, func() {}
+	}
+	if framework.NodeOSDistroIs("windows") {
+		config.ClientNodeSelector = map[string]string{
+			"beta.kubernetes.io/os": "windows",
+		}
+	}
+	return config, func() {}
 }
 
 // TODO: Fix authorization error in attach operation and uncomment below
@@ -1624,6 +1646,7 @@ var (
 		testsuites.CapFsGroup:     true,
 		testsuites.CapBlock:       false,
 		testsuites.CapExec:        true,
+		testsuites.CapMultiPODs:   true,
 	}
 	localVolumeCapabitilies = map[utils.LocalVolumeType]map[testsuites.Capability]bool{
 		utils.LocalVolumeBlock: {
@@ -1631,6 +1654,7 @@ var (
 			testsuites.CapFsGroup:     true,
 			testsuites.CapBlock:       true,
 			testsuites.CapExec:        true,
+			testsuites.CapMultiPODs:   true,
 		},
 	}
 	// fstype

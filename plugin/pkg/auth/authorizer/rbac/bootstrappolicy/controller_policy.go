@@ -50,7 +50,7 @@ func addControllerRole(controllerRoles *[]rbacv1.ClusterRole, controllerRoleBind
 }
 
 func eventsRule() rbacv1.PolicyRule {
-	return rbacv1helpers.NewRule("create", "update", "patch").Groups(legacyGroup).Resources("events").RuleOrDie()
+	return rbacv1helpers.NewRule("create", "update", "patch").Groups(legacyGroup, eventsGroup).Resources("events").RuleOrDie()
 }
 
 func buildControllerRoles() ([]rbacv1.ClusterRole, []rbacv1.ClusterRoleBinding) {
@@ -85,9 +85,8 @@ func buildControllerRoles() ([]rbacv1.ClusterRole, []rbacv1.ClusterRoleBinding) 
 	addControllerRole(&controllerRoles, &controllerRoleBindings, rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: saRolePrefix + "clusterrole-aggregation-controller"},
 		Rules: []rbacv1.PolicyRule{
-			// this controller must have full permissions to allow it to mutate any role in any way
-			rbacv1helpers.NewRule("*").Groups("*").Resources("*").RuleOrDie(),
-			rbacv1helpers.NewRule("*").URLs("*").RuleOrDie(),
+			// this controller must have full permissions on clusterroles to allow it to mutate them in any way
+			rbacv1helpers.NewRule("escalate", "get", "list", "watch", "update", "patch").Groups(rbacGroup).Resources("clusterroles").RuleOrDie(),
 		},
 	})
 	addControllerRole(&controllerRoles, &controllerRoleBindings, rbacv1.ClusterRole{

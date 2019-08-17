@@ -186,7 +186,7 @@ func (mounter *Mounter) IsLikelyNotMountPoint(file string) (bool, error) {
 			return true, fmt.Errorf("readlink error: %v", err)
 		}
 		hu := NewHostUtil()
-		exists, err := hu.ExistsPath(target)
+		exists, err := hu.PathExists(target)
 		if err != nil {
 			return true, err
 		}
@@ -311,6 +311,8 @@ func getAllParentLinks(path string) ([]string, error) {
 
 type hostUtil struct{}
 
+// NewHostUtil returns a struct that implements the HostUtils interface on
+// windows platforms
 func NewHostUtil() HostUtils {
 	return &hostUtil{}
 }
@@ -391,8 +393,8 @@ func (hu *hostUtil) MakeFile(pathname string) error {
 	return nil
 }
 
-// ExistsPath checks whether the path exists
-func (hu *hostUtil) ExistsPath(pathname string) (bool, error) {
+// PathExists checks whether the path exists
+func (hu *hostUtil) PathExists(pathname string) (bool, error) {
 	return utilpath.Exists(utilpath.CheckFollowSymlink, pathname)
 }
 
@@ -401,10 +403,11 @@ func (hu *hostUtil) EvalHostSymlinks(pathname string) (string, error) {
 	return filepath.EvalSymlinks(pathname)
 }
 
-// Note that on windows, it always returns 0. We actually don't set FSGroup on
+// GetOwner returns the integer ID for the user and group of the given path
+// Note that on windows, it always returns 0. We actually don't set Group on
 // windows platform, see SetVolumeOwnership implementation.
-func (hu *hostUtil) GetFSGroup(pathname string) (int64, error) {
-	return 0, nil
+func (hu *hostUtil) GetOwner(pathname string) (int64, int64, error) {
+	return -1, -1, nil
 }
 
 func (hu *hostUtil) GetSELinuxSupport(pathname string) (bool, error) {

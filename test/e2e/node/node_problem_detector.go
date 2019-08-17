@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2essh "k8s.io/kubernetes/test/e2e/framework/ssh"
@@ -55,6 +56,8 @@ var _ = SIGDescribe("NodeProblemDetector [DisabledForLargeClusters]", func() {
 	})
 
 	ginkgo.It("should run without error", func() {
+		framework.SkipUnlessSSHKeyPresent()
+
 		ginkgo.By("Getting all nodes and their SSH-able IP addresses")
 		nodes := framework.GetReadySchedulableNodesOrDie(f.ClientSet)
 		gomega.Expect(len(nodes.Items)).NotTo(gomega.BeZero())
@@ -266,7 +269,7 @@ func getCPUStat(f *framework.Framework, host string) (usage, uptime float64) {
 }
 
 func getNpdPodStat(f *framework.Framework, nodeName string) (cpuUsage, rss, workingSet float64) {
-	summary, err := framework.GetStatsSummary(f.ClientSet, nodeName)
+	summary, err := e2ekubelet.GetStatsSummary(f.ClientSet, nodeName)
 	framework.ExpectNoError(err)
 
 	hasNpdPod := false

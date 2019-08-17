@@ -413,6 +413,19 @@ func GetEtcdStorageDataForNamespace(namespace string) map[schema.GroupVersionRes
 		},
 		// --
 
+		// k8s.io/kubernetes/pkg/apis/admissionregistration/v1
+		gvr("admissionregistration.k8s.io", "v1", "validatingwebhookconfigurations"): {
+			Stub:             `{"metadata":{"name":"hook2","creationTimestamp":null},"webhooks":[{"name":"externaladmissionhook.k8s.io","clientConfig":{"service":{"namespace":"ns","name":"n"},"caBundle":null},"rules":[{"operations":["CREATE"],"apiGroups":["group"],"apiVersions":["version"],"resources":["resource"]}],"failurePolicy":"Ignore","sideEffects":"None","admissionReviewVersions":["v1beta1"]}]}`,
+			ExpectedEtcdPath: "/registry/validatingwebhookconfigurations/hook2",
+			ExpectedGVK:      gvkP("admissionregistration.k8s.io", "v1beta1", "ValidatingWebhookConfiguration"),
+		},
+		gvr("admissionregistration.k8s.io", "v1", "mutatingwebhookconfigurations"): {
+			Stub:             `{"metadata":{"name":"hook2","creationTimestamp":null},"webhooks":[{"name":"externaladmissionhook.k8s.io","clientConfig":{"service":{"namespace":"ns","name":"n"},"caBundle":null},"rules":[{"operations":["CREATE"],"apiGroups":["group"],"apiVersions":["version"],"resources":["resource"]}],"failurePolicy":"Ignore","sideEffects":"None","admissionReviewVersions":["v1beta1"]}]}`,
+			ExpectedEtcdPath: "/registry/mutatingwebhookconfigurations/hook2",
+			ExpectedGVK:      gvkP("admissionregistration.k8s.io", "v1beta1", "MutatingWebhookConfiguration"),
+		},
+		// --
+
 		// k8s.io/kubernetes/pkg/apis/admissionregistration/v1beta1
 		gvr("admissionregistration.k8s.io", "v1beta1", "validatingwebhookconfigurations"): {
 			Stub:             `{"metadata":{"name":"hook1","creationTimestamp":null},"webhooks":[{"name":"externaladmissionhook.k8s.io","clientConfig":{"service":{"namespace":"ns","name":"n"},"caBundle":null},"rules":[{"operations":["CREATE"],"apiGroups":["group"],"apiVersions":["version"],"resources":["resource"]}],"failurePolicy":"Ignore"}]}`,
@@ -464,6 +477,15 @@ func GetEtcdStorageDataForNamespace(namespace string) map[schema.GroupVersionRes
 		},
 		// --
 
+		// k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1
+		gvr("apiextensions.k8s.io", "v1", "customresourcedefinitions"): {
+			Stub: `{"metadata": {"name": "openshiftwebconsoleconfigs.webconsole2.operator.openshift.io"},"spec": {` +
+				`"scope": "Cluster","group": "webconsole2.operator.openshift.io",` +
+				`"versions": [{"name":"v1alpha1","storage":true,"served":true,"schema":{"openAPIV3Schema":{"type":"object"}}}],` +
+				`"names": {"kind": "OpenShiftWebConsoleConfig","plural": "openshiftwebconsoleconfigs","singular": "openshiftwebconsoleconfig"}}}`,
+			ExpectedEtcdPath: "/registry/apiextensions.k8s.io/customresourcedefinitions/openshiftwebconsoleconfigs.webconsole2.operator.openshift.io",
+			ExpectedGVK:      gvkP("apiextensions.k8s.io", "v1beta1", "CustomResourceDefinition"),
+		},
 		// k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1
 		gvr("apiextensions.k8s.io", "v1beta1", "customresourcedefinitions"): {
 			Stub:             `{"metadata": {"name": "openshiftwebconsoleconfigs.webconsole.operator.openshift.io"},"spec": {"scope": "Cluster","group": "webconsole.operator.openshift.io","version": "v1alpha1","names": {"kind": "OpenShiftWebConsoleConfig","plural": "openshiftwebconsoleconfigs","singular": "openshiftwebconsoleconfig"}}}`,
